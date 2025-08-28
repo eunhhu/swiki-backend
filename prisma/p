@@ -1,0 +1,221 @@
+
+
+# 목표 요약
+- 익명 위키: 로그인 없이 작성/수정/검색/조정 가능
+- 관리자만 로그인(잠금/롤백/삭제/차단 등)
+- 실시간 협업(소켓): 같은 페이지 편집/커서/프레즌스 공유
+- AI 검색: 하이브리드(BM25+임베딩)로 정확도 향상
+
+아래 제안은 현재 코드베이스(Elysia+Bun+Prisma)와 `sqlite` 기본 설정([prisma/schema.prisma](cci:7://file:///c:/Users/user/work/swiki-backend/prisma/schema.prisma:0:0-0:0))을 고려했습니다. 운영 전환 시 Postgres(+pgvector) 선택지를 병행 소개합니다.
+
+# 데이터 모델(Prisma) 제안
+
+현재 [prisma/schema.prisma](cci:7://file:///c:/Users/user/work/swiki-backend/prisma/schema.prisma:0:0-0:0):
+- `Role`, `User` 존재. User는 관리자 전용으로 유지.
+- 익명 사용자는 DB 계정 없이 세션 수준으로 다룹니다.
+
+핵심 모델:
+- __Space__ (선택) 여러 위키 영역 지원
+- __Page__ 페이지 최신 스냅샷(슬러그, 제목, 콘텐츠, 잠금)
+- __PageRevision__ 모든 변경 이력, 익명/관리자 행위자 기록
+- __Tag__ / __PageTag__ 태그
+- __Comment__ 익명 댓글(대댓글)
+- __Attachment__ 첨부(파일 메타)
+- __PageLink__ 내부 링크(백링크/그래프)
+- __AnonIdentity__ 익명 세션 식별(쿠키 기반 id, ip/UA 해시)
+- __Embedding__ 임베딩 벡터(문서/리비전 단위 저장)
+
+SQLite 기준 간결 스키마 예시(요지):
+
+```prisma
+model Space {
+  id        String @id @default(uuid())
+  key       String @unique
+  name      String
+  pages     Page[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Page {
+  id           String   @id @default(uuid())
+  spaceId      String
+  slug         String
+  title        String
+  contentMd    String   // 최신 마크다운
+  isLocked     Boolean  @default(false)
+  currentRevId String?  // 최신 리비전 id
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  space        Space    @relation(fields: [spaceId], references: [id])
+  currentRev   PageRevision? @relation(fields: [currentRevId], references: [id])
+  revisions    PageRevision[]
+  tags         PageTag[]
+  comments     Comment[]
+  attachments  Attachment[]
+  outLinks     PageLink[] @relation("outLinks")
+  inLinks      PageLink[] @relation("inLinks")
+
+  @@unique([spaceId, slug])
+}
+
+model PageRevision {
+  id        String   @id @default(uuid())
+  pageId    String
+  revNum    Int
+  title     String
+  contentMd String
+  summary   String?
+  actorType String   // 'ANON' | 'ADMIN'
+  actorAnonId String?
+  actorUserId String?
+  createdAt DateTime @default(now())
+
+  page   Page   @relation(fields: [pageId], references: [id])
+  actorUser User? @relation(fields: [actorUserId], references: [id])
+
+  @@index([pageId, revNum])
+}
+
+model Tag {
+  id    String @id @default(uuid())
+  name  String @unique
+  pages PageTag[]
+}
+
+model PageTag {
+  pageId String
+  tagId  String
+  page   Page @relation(fields: [pageId], references: [id])
+  tag    Tag  @relation(fields: [tagId], references: [id])
+  @@id([pageId, tagId])
+}
+
+model Comment {
+  id        String   @id @default(uuid())
+  pageId    String
+  parentId  String?
+  contentMd String
+  actorAnonId String?
+  actorUserId String?
+  createdAt DateTime @default(now())
+
+  page   Page   @relation(fields: [pageId], references: [id])
+  parent Comment? @relation("CommentReplies", fields: [parentId], references: [id])
+  replies Comment[] @relation("CommentReplies")
+  actorUser User? @relation(fields: [actorUserId], references: [id])
+}
+
+model Attachment {
+  id         String  @id @default(uuid())
+  pageId     String
+  filename   String
+  mimeType   String
+  size       Int
+  storageKey String   // /uploads/... 또는 S3 키
+  createdAt  DateTime @default(now())
+  page       Page     @relation(fields: [pageId], references: [id])
+}
+
+model PageLink {
+  id      String @id @default(uuid())
+  fromId  String
+  toId    String
+  from    Page   @relation("outLinks", fields: [fromId], references: [id])
+  to      Page   @relation("inLinks", fields: [toId], references: [id])
+  @@index([toId])
+}
+
+model AnonIdentity {
+  id         String   @id @default(uuid()) // 쿠키로 부여
+  ipHash     String?  // IP 해시(SHA256+salt), PII 저장 금지
+  uaHash     String?  // User-Agent 해시
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @updatedAt
+}
+
+model Embedding {
+  id        String   @id @default(uuid())
+  pageId    String
+  revId     String?
+  provider  String   // 'openai' | 'google'
+  model     String
+  dim       Int
+  vector    Bytes    // Float32Array 직렬화
+  createdAt DateTime @default(now())
+
+  page Page @relation(fields: [pageId], references: [id])
+  rev  PageRevision? @relation(fields: [revId], references: [id])
+}
+```
+
+검색 인덱스:
+- SQLite 초기: FTS5 가상테이블(Prisma 모델로 직접 선언 불가) + 트리거. 마이그레이션에서 RAW SQL로 생성/동기화.
+- Postgres 전환: `tsvector` 컬럼 + GIN 인덱스, 벡터는 `pgvector`(float4[1536] 등).
+
+# AI 검색 설계(하이브리드)
+- __1단계 후보__: FTS(BM25)로 상위 100 문서
+- __2단계 재랭킹__: 임베딩 코사인 유사도로 상위 K
+- __3단계 응답__: 상위 문서 요약과 스니펫, 필요 시 `/ai/ask`로 RAG
+
+임베딩 전략:
+- OpenAI: text-embedding-3-small(1536d) 또는 -large
+- Google GenAI: text-embedding-004(768d)
+- 저장: `Embedding.vector`(Bytes) + `dim`. 동일 문서 최신 리비전에 1개 유지.
+
+엔드포인트:
+- `GET /search?q=...&limit=...` → 결과/스니펫/점수
+- `POST /ai/ask { query }` → 컨텍스트 상위 N 문서 첨부 → 모델 호출(OpenAI 또는 Google). 키는 `.env`에 `OPENAI_API_KEY`/`GOOGLE_GENAI_API_KEY`.
+
+# 실시간 협업(소켓)
+- 경로: `GET /ws/page/:pageId`
+- 룸: `room:pageId`
+- 이벤트:
+  - join/leave + presence(닉네임 임시, 커서 위치)
+  - patch: `{ baseRev, ops }` OT 또는 CRDT(Yjs/Automerge) 중 선택
+  - commit: 서버가 `PageRevision` 생성, 충돌 시 서버 머지 → 새 `revNum` 브로드캐스트
+  - lock: 관리자가 잠금 토글 → 모든 클라이언트 편집 막기
+- 처음엔 단순 “서버 머지 + 리비전 번호” 방식으로 시작하고, 필요 시 Yjs로 확장.
+
+# 접근 제어/운영 정책
+- __익명 우선__: 쓰기/수정/댓글/태그 모두 허용, `AnonIdentity.id`를 쿠키로 발급
+- __반악용__: IP/UA 해시 기반 레이트리밋(이미 [src/middleware/rateLimit.ts](cci:7://file:///c:/Users/user/work/swiki-backend/src/middleware/rateLimit.ts:0:0-0:0) 보유). 스팸/도배 방지 쿨다운, 페이지 잠금
+- __관리자__: 기존 `User`/`Role`로 로그인. 가능한 조치: 페이지 록/언록, 리비전 롤백, 삭제, 특정 `AnonIdentity` 제한(소프트밴)
+
+# API 라우트 구조
+- `src/wiki/route.ts`
+  - `GET /wiki/pages` 목록/검색(FTS/BM25, 태그/스페이스 필터, 페이지네이션)
+  - `GET /wiki/pages/:slug`
+  - `POST /wiki/pages` 생성(익명), `PUT /wiki/pages/:id` 수정(익명, `baseRev` 필요)
+  - `GET /wiki/pages/:id/history` 리비전
+  - `POST /wiki/pages/:id/revert/:revId` 관리자
+  - `POST /wiki/pages/:id/lock` 관리자
+  - `POST /wiki/pages/:id/comments`
+  - `POST /wiki/pages/:id/attachments` (디스크 또는 S3)
+- `src/wiki/socket.ts` 페이지 룸/이벤트
+- `src/ai/search.ts` 후보+재랭킹
+- `src/ai/ask.ts` RAG
+
+# 디렉토리 구성 제안
+- `src/wiki/`
+  - [route.ts](cci:7://file:///c:/Users/user/work/swiki-backend/src/auth/route.ts:0:0-0:0), `service.ts`, `socket.ts`, [schema.ts](cci:7://file:///c:/Users/user/work/swiki-backend/src/api/schema.ts:0:0-0:0)(TypeBox)
+  - `search.ts`(FTS 쿼리/raw SQL), `embedding.ts`(큐/배치)
+- `src/ai/`
+  - `providers/openai.ts`, `providers/google.ts`, `rag.ts`
+- `jobs/` 임베딩/링크/FTS 동기화 워커
+- `uploads/` 로컬 저장(또는 S3 클라이언트)
+
+# SQLite vs Postgres
+- __SQLite(빠른 시작)__: FTS5 + 애플리케이션 레벨 재랭킹. 단일 노드/저비용에 적합.
+- __Postgres(확장)__: `tsvector` + `pgvector`로 서버측 하이브리드 검색/스코어링, 동시성/트랜잭션/락 관리 유리.
+
+# 다음 단계 제안
+1) Prisma 모델 확정 후 마이그레이션
+2) `src/wiki/route.ts`에 CRUD/히스토리/락 라우트
+3) `src/wiki/socket.ts`에 페이지 룸/패치/커서 이벤트
+4) SQLite FTS5 테이블/트리거 마이그레이션 추가(raw SQL)
+5) `src/ai/search.ts`에 BM25 후보 + 임베딩 재랭킹(추후 PG 전환)
+6) `/search`, `/ai/ask` 라우트 추가(레이트리밋 적용)
+
+원하시면 위 Prisma 스키마 초안을 실제 [schema.prisma](cci:7://file:///c:/Users/user/work/swiki-backend/prisma/schema.prisma:0:0-0:0)에 반영하고, FTS5 마이그레이션/엔드포인트/소켓 골격까지 바로 생성해 드리겠습니다.
