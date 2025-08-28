@@ -62,9 +62,10 @@ export const rateLimitPlugin = (opts: RateLimitOptions) => (app: Elysia) =>
     if (!allowed) return Api.tooManyRequests();
   });
 
-export const rateLimitGuard = (opts: RateLimitOptions) => ({
-  async onBeforeHandle(ctx: Context) {
+export const rateLimitGuard = (opts: RateLimitOptions) => {
+  const handler = async (ctx: Context) => {
     const allowed = await checkAndConsume(ctx, { headers: true, ...opts });
     if (!allowed) return Api.tooManyRequests();
-  },
-});
+  };
+  return { beforeHandle: handler, onBeforeHandle: handler };
+};

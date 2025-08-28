@@ -20,7 +20,9 @@ export const authRoutes = (options: AuthRoutesOptions) => new Elysia({
 })
     .use(authPlugin)
 
-    .post("/login", async ({ body, accessJwt, refreshJwt, cookie, set }) => {
+    .group('', app => app
+        .guard(rateLimitGuard({ windowMs: 60_000, max: 5, keyPrefix: 'login' }))
+        .post("/login", async ({ body, accessJwt, refreshJwt, cookie, set }) => {
         const { email, password } = body;
         
         const user = await options.prisma.user.findUnique({ 
@@ -86,7 +88,6 @@ export const authRoutes = (options: AuthRoutesOptions) => new Elysia({
             email: Type.String({ format: "email" }),
             password: Type.String({ minLength: 6 })
         }),
-        onBeforeHandle: rateLimitGuard({ windowMs: 60_000, max: 5, keyPrefix: 'login' }).onBeforeHandle,
         
         response: ApiResponse(Type.Object({
             user: Type.Object({
@@ -98,9 +99,11 @@ export const authRoutes = (options: AuthRoutesOptions) => new Elysia({
             accessToken: Type.String(),
             refreshToken: Type.String()
         }))
-    })
+    }))
 
-    .post("/register", async ({ body, cookie, set, accessJwt, refreshJwt }) => {
+    .group('', app => app
+        .guard(rateLimitGuard({ windowMs: 3_600_000, max: 3, keyPrefix: 'register' }))
+        .post("/register", async ({ body, cookie, set, accessJwt, refreshJwt }) => {
         const { email, password, name } = body;
 
         const existingUser = await options.prisma.user.findUnique({ where: { email } });
@@ -157,7 +160,6 @@ export const authRoutes = (options: AuthRoutesOptions) => new Elysia({
             password: Type.String({ minLength: 6 }),
             name: Type.String()
         }),
-        onBeforeHandle: rateLimitGuard({ windowMs: 3_600_000, max: 3, keyPrefix: 'register' }).onBeforeHandle,
         
         response: ApiResponse(Type.Object({
             user: Type.Object({
@@ -231,3 +233,4 @@ export const authRoutes = (options: AuthRoutesOptions) => new Elysia({
     }, {
         response: ApiResponse(Type.Null())
     })
+)
