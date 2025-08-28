@@ -32,123 +32,40 @@ model User {
   @@map("users")
 }
 
-model Space {
-  id        String @id @default(uuid())
-  key       String @unique
-  name      String
-  pages     Page[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
-
-model Page {
-  id           String   @id @default(uuid())
-  spaceId      String
-  slug         String
+model Document {
+  id           String @id @default(uuid())
   title        String
-  contentMd    String   // 최신 마크다운
-  isLocked     Boolean  @default(false)
-  currentRevId String?  // 최신 리비전 id
+  contentMd    String
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+  updatedCount Int @default(0)
+  tags         Tag[]
+  histories    History[]
 
-  space        Space    @relation(fields: [spaceId], references: [id])
-  currentRev   PageRevision? @relation(fields: [currentRevId], references: [id])
-  revisions    PageRevision[]
-  tags         PageTag[]
-  comments     Comment[]
-  attachments  Attachment[]
-  outLinks     PageLink[] @relation("outLinks")
-  inLinks      PageLink[] @relation("inLinks")
-
-  @@unique([spaceId, slug])
+  @@map("documents")
 }
 
-model PageRevision {
-  id        String   @id @default(uuid())
-  pageId    String
-  revNum    Int
-  title     String
-  contentMd String
-  summary   String?
-  actorType String   // 'ANON' | 'ADMIN'
-  actorAnonId String?
-  actorUserId String?
-  createdAt DateTime @default(now())
+model History {
+  id         String @id @default(uuid())
+  contentMd  String
+  createdAt  DateTime @default(now())
 
-  page   Page   @relation(fields: [pageId], references: [id])
-  actorUser User? @relation(fields: [actorUserId], references: [id])
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id])
+}
 
-  @@index([pageId, revNum])
+enum TagType {
+  STD_NUM // 학번
+  MAJOR // 학과
+  CUSTOM // 커스텀
 }
 
 model Tag {
-  id    String @id @default(uuid())
-  name  String @unique
-  pages PageTag[]
-}
+  id        String @id @default(uuid())
+  type      TagType
+  content   String @unique
 
-model PageTag {
-  pageId String
-  tagId  String
-  page   Page @relation(fields: [pageId], references: [id])
-  tag    Tag  @relation(fields: [tagId], references: [id])
-  @@id([pageId, tagId])
-}
+  documents Document[]
 
-model Comment {
-  id        String   @id @default(uuid())
-  pageId    String
-  parentId  String?
-  contentMd String
-  actorAnonId String?
-  actorUserId String?
-  createdAt DateTime @default(now())
-
-  page   Page   @relation(fields: [pageId], references: [id])
-  parent Comment? @relation("CommentReplies", fields: [parentId], references: [id])
-  replies Comment[] @relation("CommentReplies")
-  actorUser User? @relation(fields: [actorUserId], references: [id])
-}
-
-model Attachment {
-  id         String  @id @default(uuid())
-  pageId     String
-  filename   String
-  mimeType   String
-  size       Int
-  storageKey String   // /uploads/... 또는 S3 키
-  createdAt  DateTime @default(now())
-  page       Page     @relation(fields: [pageId], references: [id])
-}
-
-model PageLink {
-  id      String @id @default(uuid())
-  fromId  String
-  toId    String
-  from    Page   @relation("outLinks", fields: [fromId], references: [id])
-  to      Page   @relation("inLinks", fields: [toId], references: [id])
-  @@index([toId])
-}
-
-model AnonIdentity {
-  id         String   @id @default(uuid()) // 쿠키로 부여
-  ipHash     String?  // IP 해시(SHA256+salt), PII 저장 금지
-  uaHash     String?  // User-Agent 해시
-  createdAt  DateTime @default(now())
-  lastSeenAt DateTime @updatedAt
-}
-
-model Embedding {
-  id        String   @id @default(uuid())
-  pageId    String
-  revId     String?
-  provider  String   // 'openai' | 'google'
-  model     String
-  dim       Int
-  vector    Bytes    // Float32Array 직렬화
-  createdAt DateTime @default(now())
-
-  page Page @relation(fields: [pageId], references: [id])
-  rev  PageRevision? @relation(fields: [revId], references: [id])
+  @@map("tags")
 }
