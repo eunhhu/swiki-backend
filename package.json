@@ -16,10 +16,12 @@
     "@elysiajs/jwt": "^1.3.3",
     "@elysiajs/static": "^1.3.0",
     "@elysiajs/swagger": "^1.3.1",
+    "@google/genai": "^1.16.0",
     "@prisma/client": "^6.15.0",
     "@sinclair/typebox": "^0.34.40",
     "argon2": "^0.44.0",
     "elysia": "latest",
+    "openai": "^5.16.0",
     "prismabox": "^1.1.25"
   },
   "devDependencies": {
