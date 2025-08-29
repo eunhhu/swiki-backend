@@ -10,6 +10,9 @@
     "db:studio": "bunx prisma studio",
     "db:seed": "bunx prisma db seed"
   },
+  "prisma": {
+    "seed": "bun run prisma/seed.ts"
+  },
   "dependencies": {
     "@elysiajs/cookie": "^0.8.0",
     "@elysiajs/cors": "^1.3.3",

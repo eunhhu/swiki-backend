@@ -73,8 +73,14 @@ app
     return Api.internalServerError(error);
   })
 
-app.listen(PORT);
-
-// In dev, Bun HMR will serve the default export automatically. Avoid manual app.listen here to prevent EADDRINUSE.
+try {
+  const started = app.listen(PORT, () => {
+    console.log("Server is running on *:" + PORT.toString());
+  });
+  console.log(`Server listening on http://localhost:${PORT}`);
+} catch (e) {
+  console.error(`Failed to start server. Is port ${PORT} in use?`, e);
+  process.exit(1);
+}
 
 // export default app;
