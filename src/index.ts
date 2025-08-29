@@ -5,6 +5,8 @@ import swagger from "@elysiajs/swagger";
 import { PrismaClient } from "@prisma/client";
 import { Elysia } from "elysia";
 import { authRoutes } from "./auth/route";
+import { wikiRoutes } from "./wiki/route";
+import { searchRoutes } from "./search/route";
 import { Api } from "./api/util";
 import { securityHeaders } from "./middleware/securityHeaders";
 import { requestLogger } from "./middleware/requestLogger";
@@ -19,7 +21,7 @@ prisma.$connect().then(() => {
   console.error('Failed to connect to database', e);
 });
 
-const PORT = process.env.PORT || 8000;
+const PORT = Number(process.env.PORT ?? 8000);
 
 const app = new Elysia();
 
@@ -61,6 +63,8 @@ app
   .get("/", ({redirect}) => redirect("/health"))
   .get("/health", () => "OK")
   .use(authRoutes({ prisma, prefix: "/auth" }))
+  .use(wikiRoutes({ prisma, prefix: "/wiki" }))
+  .use(searchRoutes({ prisma }))
   // Error handling
   .onError(({ error, set, request }) => {
     // structured error log
@@ -68,7 +72,9 @@ app
     set.status = 500;
     return Api.internalServerError(error);
   })
-  // Start server
-  .listen(PORT);
 
-export default app;
+app.listen(PORT);
+
+// In dev, Bun HMR will serve the default export automatically. Avoid manual app.listen here to prevent EADDRINUSE.
+
+// export default app;

@@ -36,9 +36,13 @@ model Document {
   id           String @id @default(uuid())
   title        String
   contentMd    String
+  views        Int @default(0)
+  embedding    Json
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   updatedCount Int @default(0)
+  editable     Boolean @default(true)
+
   tags         Tag[]
   histories    History[]
 
@@ -48,6 +52,7 @@ model Document {
 model History {
   id         String @id @default(uuid())
   contentMd  String
+  writenBy   String
   createdAt  DateTime @default(now())
 
   documentId String

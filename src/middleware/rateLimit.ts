@@ -1,5 +1,6 @@
 import type { Elysia, Context } from 'elysia';
 import { Api } from '../api/util';
+import { hashIpUa } from '../document/hash';
 
 interface RateLimitOptions {
   windowMs: number; // time window in ms
@@ -23,9 +24,11 @@ function now() {
 
 function getKey(ctx: Context, opts: RateLimitOptions) {
   const url = new URL(ctx.request.url);
-  const ip = (ctx.headers['x-forwarded-for'] || ctx.headers['x-real-ip'] || '') as string;
-  const base = `${ip || 'ip:unknown'}:${url.pathname}`;
-  return `${opts.keyPrefix || 'rl'}:${base}`;
+  const ua = (ctx.headers['user-agent'] || ctx.request.headers.get('user-agent') || '') as string;
+  // Prefer server-provided connection info if available in deployment; fallback to proxy headers.
+  const ip = (ctx.request.headers.get('x-forwarded-for') || ctx.request.headers.get('x-real-ip') || '') as string;
+  const h = hashIpUa(ip, ua);
+  return `${opts.keyPrefix || 'rl'}:${h}:${url.pathname}`;
 }
 
 function setHeaders(ctx: Context, opts: RateLimitOptions, bucket: Bucket) {
