@@ -3,6 +3,8 @@ import { t } from "elysia";
 export const BrowseNodeSchema = t.Object({
   id: t.String(),
   title: t.String(),
+  image: t.String(),
+  words: t.Number(),
   x: t.Integer(),
   y: t.Integer(),
   score: t.Number(),
