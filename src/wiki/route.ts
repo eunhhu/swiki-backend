@@ -45,6 +45,8 @@ export const wikiRoutes = (opts: WikiRoutesOptions) =>
             updatedAt: true,
             updatedCount: true,
             embedding: true,
+            thumbnail: true,
+            words: true,
           },
         });
 
@@ -72,6 +74,8 @@ export const wikiRoutes = (opts: WikiRoutesOptions) =>
         const { coords } = projectTo2D(embs);
         const nodes = withEmbeddings.map((d, i) => ({
           id: d.id,
+          image: d.thumbnail,
+          words: d.words,
           title: d.title,
           x: coords[i]?.x ?? 0,
           y: coords[i]?.y ?? 0,
@@ -104,6 +108,7 @@ export const wikiRoutes = (opts: WikiRoutesOptions) =>
             contentMd: "",
             embedding,
             editable: true,
+            words: 0,
             tags: {
               connectOrCreate: (tags || []).map((tg) => ({
                 where: { content: tg },

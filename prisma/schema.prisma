@@ -36,6 +36,7 @@ model Document {
   id           String @id @default(uuid())
   title        String
   contentMd    String
+  words        Int @default(0)
   thumbnail    String? // Base64 Incoded image
   views        Int @default(0)
   embedding    Json

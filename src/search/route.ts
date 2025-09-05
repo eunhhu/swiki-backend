@@ -80,7 +80,7 @@ export const searchRoutes = (opts: SearchRoutesOptions) =>
         if (!qEmb.length) return Api.internalServerError("embedding failed");
 
         const docs = await opts.prisma.document.findMany({
-          select: { id: true, title: true, views: true, updatedAt: true, embedding: true },
+          select: { id: true, title: true, views: true, updatedAt: true, embedding: true, thumbnail: true, words: true },
         });
 
         const scored = await Promise.all(
@@ -102,6 +102,8 @@ export const searchRoutes = (opts: SearchRoutesOptions) =>
         const { coords } = projectTo2D(embs);
         const nodes = top.map((d, i) => ({
           id: d.id,
+          image: d.thumbnail,
+          words: d.words,
           title: d.title,
           x: coords[i]?.x ?? 0,
           y: coords[i]?.y ?? 0,

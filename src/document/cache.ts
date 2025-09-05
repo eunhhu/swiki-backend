@@ -2,6 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 
 export interface CachedDoc {
   content: string;
+  words: number;
   updatedCount: number;
   dirty: boolean;
 }
@@ -18,7 +19,7 @@ export async function loadDocToCache(id: string, prisma: PrismaClient): Promise<
   if (cached) return cached;
   const doc = await prisma.document.findUnique({ where: { id } });
   if (!doc) return null;
-  cached = { content: doc.contentMd, updatedCount: doc.updatedCount, dirty: false };
+  cached = { content: doc.contentMd, words: doc.words, updatedCount: doc.updatedCount, dirty: false };
   docCache.set(id, cached);
   return cached;
 }
@@ -28,11 +29,12 @@ export function updateCachedContent(id: string, newContent: string) {
   if (c) {
     if (c.content !== newContent) {
       c.content = newContent;
+      c.words = newContent.split(" ").length;
       c.updatedCount += 1;
       c.dirty = true;
     }
   } else {
-    docCache.set(id, { content: newContent, updatedCount: 1, dirty: true });
+    docCache.set(id, { content: newContent, words: newContent.split(" ").length, updatedCount: 1, dirty: true });
   }
 }
 
@@ -56,6 +58,7 @@ export async function flushDoc(id: string, prisma: PrismaClient, writenBy: strin
       data: {
         contentMd: cached.content,
         updatedCount: cached.updatedCount,
+        words: cached.words,
       },
     }),
   ]);
