@@ -2,6 +2,8 @@ import type { PrismaClient } from "@prisma/client";
 import { generateEmbedding } from "../embedding";
 import { projectTo2D, buildKnnEdges, type Embedding, type Vec2, type Edge } from "./layout";
 import { trendingScore } from "./score";
+import * as fs from "fs";
+import * as path from "path";
 
 export interface GridDocNode {
   id: string;
@@ -65,8 +67,37 @@ export class GridMapService {
   private lastAccess = new Map<string, number>();
   private initialized = false;
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
+  private removedCount = 0;
 
-  constructor(private readonly options: { ttlMs: number; minCoreRadius: number }) {}
+  // simple mutex
+  private lockQueue: Array<() => void> = [];
+  private locked = false;
+
+  private readonly placement: "spiral" | "nearest";
+  private readonly persistPath: string | null;
+  private lastSaveTs: number | null = null;
+  private edgesCache = new Map<string, Edge[]>();
+  private readonly edgesCacheMax = 100;
+
+  constructor(private readonly options: { ttlMs: number; minCoreRadius: number; placement?: "spiral" | "nearest"; persistPath?: string | null }) {
+    this.placement = options.placement ?? (process.env.GRID_PLACEMENT === "spiral" ? "spiral" : "nearest");
+    this.persistPath = options.persistPath ?? (process.env.GRID_PERSIST_PATH || null);
+  }
+
+  private async withLock<T>(fn: () => Promise<T>): Promise<T> {
+    if (!this.locked) {
+      this.locked = true;
+      try {
+        return await fn();
+      } finally {
+        this.locked = false;
+        const next = this.lockQueue.shift();
+        if (next) next();
+      }
+    }
+    await new Promise<void>((resolve) => this.lockQueue.push(resolve));
+    return this.withLock(fn);
+  }
 
   isInitialized(): boolean { return this.initialized; }
 
@@ -82,7 +113,12 @@ export class GridMapService {
         const la = this.lastAccess.get(id) ?? 0;
         if (manhattan > minCoreRadius && la > 0 && la < cutoff) {
           this.removeNode(id);
+          this.removedCount += 1;
         }
+      }
+      // periodic save if persistence enabled
+      if (this.persistPath && (this.lastSaveTs === null || now() - this.lastSaveTs > 60_000)) {
+        try { this.saveToDisk(); } catch {}
       }
     }, 60_000);
   }
@@ -133,28 +169,85 @@ export class GridMapService {
     }
   }
 
+  private isOccupied(x: number, y: number): boolean {
+    return this.idByCell.has(cellKey(x, y));
+  }
+
+  private* ringNeighbors(cx: number, cy: number, r: number): Generator<{ x: number; y: number }> {
+    if (r === 0) { yield { x: cx, y: cy }; return; }
+    let x = cx - r, y = cy - r;
+    for (let i = 0; i < 2 * r; i++) { yield { x: x + i, y }; }
+    x = cx + r; y = cy - r; for (let i = 0; i < 2 * r; i++) { yield { x, y: y + i }; }
+    x = cx + r; y = cy + r; for (let i = 0; i < 2 * r; i++) { yield { x: x - i, y }; }
+    x = cx - r; y = cy + r; for (let i = 0; i < 2 * r; i++) { yield { x, y: y - i }; }
+  }
+
+  private nearestFreeCellApprox(tx: number, ty: number, maxR: number = 2048): { x: number; y: number } {
+    const qx = Math.round(tx), qy = Math.round(ty);
+    if (!this.isOccupied(qx, qy)) return { x: qx, y: qy };
+    for (let r = 1; r <= maxR; r++) {
+      for (const p of this.ringNeighbors(qx, qy, r)) {
+        if (!this.isOccupied(p.x, p.y)) return p;
+      }
+    }
+    // fallback shouldn't happen in practical sizes
+    return { x: qx, y: qy };
+  }
+
+  private placeNearest(cands: PlaceCandidate[]) {
+    const sorted = cands.slice().sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      const ra = Math.hypot(a.coord.x, a.coord.y);
+      const rb = Math.hypot(b.coord.x, b.coord.y);
+      return ra - rb;
+    });
+    for (const d of sorted) {
+      const pos = this.nearestFreeCellApprox(d.coord.x, d.coord.y);
+      const node: GridDocNode = {
+        id: d.id,
+        title: d.title,
+        x: pos.x,
+        y: pos.y,
+        score: d.score,
+        views: d.views,
+        updatedAt: d.updatedAt.toISOString(),
+        emb: d.emb,
+      };
+      this.docsById.set(d.id, node);
+      this.idByCell.set(cellKey(pos.x, pos.y), d.id);
+      this.placedOrder.push(d.id);
+      this.lastAccess.set(d.id, now());
+    }
+  }
+
   async ensureInitialized(prisma: PrismaClient, initialN: number = 50) {
     if (this.initialized) return;
-    const docs = await prisma.document.findMany({
+    await this.withLock(async () => {
+      if (this.initialized) return;
+      // try load from disk first
+      const loaded = await this.tryLoadFromDisk(prisma);
+      if (loaded) { this.initialized = true; return; }
+
+      const docs = await prisma.document.findMany({
       select: { id: true, title: true, views: true, updatedAt: true, updatedCount: true, embedding: true },
-    });
-    const scored = docs.map((d) => ({
+      });
+      const scored = docs.map((d) => ({
       ...d,
       score: trendingScore(d.views ?? 0, d.updatedAt, d.updatedCount ?? 0),
-    })).sort((a, b) => b.score - a.score).slice(0, Math.max(0, initialN));
+      })).sort((a, b) => b.score - a.score).slice(0, Math.max(0, initialN));
 
-    const withEmb = await Promise.all(scored.map(async (d) => {
+      const withEmb = await Promise.all(scored.map(async (d) => {
       let emb = Array.isArray(d.embedding) ? (d.embedding as number[]) : [];
       if (!emb.length) {
         emb = await generateEmbedding(d.title);
         await prisma.document.update({ where: { id: d.id }, data: { embedding: emb } });
       }
       return { ...d, emb };
-    }));
+      }));
 
-    const embs: Embedding[] = withEmb.map((d) => d.emb);
-    const { coords } = projectTo2D(embs);
-    const cands: PlaceCandidate[] = withEmb.map((d, i) => ({
+      const embs: Embedding[] = withEmb.map((d) => d.emb);
+      const { coords } = projectTo2D(embs);
+      const cands: PlaceCandidate[] = withEmb.map((d, i) => ({
       id: d.id,
       title: d.title,
       views: d.views ?? 0,
@@ -163,10 +256,15 @@ export class GridMapService {
       emb: d.emb,
       score: d.score,
       coord: coords[i] ?? { x: 0, y: 0 },
-    }));
+      }));
 
-    this.placeInSpiral(cands);
-    this.initialized = true;
+      if (this.placement === "nearest") this.placeNearest(cands);
+      else this.placeInSpiral(cands);
+      this.initialized = true;
+      if (this.persistPath) {
+        try { this.saveToDisk(); } catch {}
+      }
+    });
   }
 
   getNodes(limit: number): GridDocNode[] {
@@ -240,24 +338,120 @@ export class GridMapService {
   }
 
   buildEdges(ids: string[], k: number): Edge[] {
+    const key = `${k}|${ids.join(',')}`;
+    const hit = this.edgesCache.get(key);
+    if (hit) {
+      // refresh LRU
+      this.edgesCache.delete(key);
+      this.edgesCache.set(key, hit);
+      return hit;
+    }
     const embs = ids.map((id) => this.docsById.get(id)!.emb);
-    return buildKnnEdges(ids, embs, Math.max(1, Math.min(k, Math.max(0, ids.length - 1))))
+    const edges = buildKnnEdges(ids, embs, Math.max(1, Math.min(k, Math.max(0, ids.length - 1))));
+    this.edgesCache.set(key, edges);
+    // enforce LRU size
+    if (this.edgesCache.size > this.edgesCacheMax) {
+      const firstKey = this.edgesCache.keys().next().value as string | undefined;
+      if (firstKey) this.edgesCache.delete(firstKey);
+    }
+    return edges;
   }
 
   async onDocFlushed(prisma: PrismaClient, id: string) {
-    // recompute embedding based on title (or leave unchanged if missing)
-    const doc = await prisma.document.findUnique({ where: { id }, select: { title: true } });
-    if (!doc) return;
-    const emb = await generateEmbedding(doc.title);
-    await prisma.document.update({ where: { id }, data: { embedding: emb } });
-    const existing = this.docsById.get(id);
-    if (existing) {
-      existing.emb = emb;
-      this.lastAccess.set(id, now());
-      // keep position stable to avoid expensive re-layout
+    await this.withLock(async () => {
+      // recompute embedding based on title (or leave unchanged if missing)
+      const doc = await prisma.document.findUnique({ where: { id }, select: { title: true } });
+      if (!doc) return;
+      const emb = await generateEmbedding(doc.title);
+      await prisma.document.update({ where: { id }, data: { embedding: emb } });
+      const existing = this.docsById.get(id);
+      if (existing) {
+        existing.emb = emb;
+        this.lastAccess.set(id, now());
+      }
+      // Invalidate edges cache to avoid stale distances
+      this.edgesCache.clear();
+      if (this.persistPath) { try { this.saveToDisk(); } catch {} }
+    });
+  }
+
+  getMetrics() {
+    const lastSave = this.lastSaveTs === null ? undefined : this.lastSaveTs;
+    const ppath = this.persistPath ?? undefined;
+    return {
+      total: this.docsById.size,
+      placedOrder: this.placedOrder.length,
+      removedCount: this.removedCount,
+      lastSaveTs: lastSave,
+      placement: this.placement,
+      persistPath: ppath,
+    };
+  }
+
+  private ensurePersistDir(): string | null {
+    if (!this.persistPath) return null;
+    const dir = path.dirname(this.persistPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    return this.persistPath;
+  }
+
+  saveToDisk() {
+    const p = this.ensurePersistDir();
+    if (!p) return;
+    const payload = {
+      version: 1,
+      nodes: Array.from(this.docsById.values()).map((n) => ({ id: n.id, x: n.x, y: n.y })),
+      ts: now(),
+    };
+    fs.writeFileSync(p, JSON.stringify(payload));
+    this.lastSaveTs = now();
+  }
+
+  private async tryLoadFromDisk(prisma: PrismaClient): Promise<boolean> {
+    const p = this.persistPath;
+    if (!p || !fs.existsSync(p)) return false;
+    try {
+      const raw = fs.readFileSync(p, "utf-8");
+      const data = JSON.parse(raw) as { version: number; nodes: { id: string; x: number; y: number }[] };
+      if (!data.nodes?.length) return false;
+      // load docs by ids, attach embeddings
+      const ids = data.nodes.map((n) => n.id);
+      const docs = await prisma.document.findMany({ where: { id: { in: ids } }, select: { id: true, title: true, views: true, updatedAt: true, embedding: true } });
+      const byId: Record<string, typeof docs[number]> = Object.fromEntries(docs.map((d) => [d.id, d]));
+      for (const n of data.nodes) {
+        const d = byId[n.id];
+        if (!d) continue;
+        let emb = Array.isArray(d.embedding) ? (d.embedding as number[]) : [];
+        if (!emb.length) {
+          emb = await generateEmbedding(d.title);
+          await prisma.document.update({ where: { id: d.id }, data: { embedding: emb } });
+        }
+        const node: GridDocNode = {
+          id: d.id,
+          title: d.title,
+          x: n.x,
+          y: n.y,
+          score: trendingScore(d.views ?? 0, d.updatedAt, 0),
+          views: d.views ?? 0,
+          updatedAt: d.updatedAt.toISOString(),
+          emb,
+        };
+        this.docsById.set(d.id, node);
+        this.idByCell.set(cellKey(n.x, n.y), d.id);
+        this.placedOrder.push(d.id);
+        this.lastAccess.set(d.id, now());
+      }
+      return this.docsById.size > 0;
+    } catch {
+      return false;
     }
   }
 }
 
 // Singleton instance with defaults
-export const Grid = new GridMapService({ ttlMs: Number(process.env.GRID_TTL_MS ?? 10 * 60_000), minCoreRadius: Number(process.env.GRID_CORE_RADIUS ?? 2) });
+export const Grid = new GridMapService({
+  ttlMs: Number(process.env.GRID_TTL_MS ?? 10 * 60_000),
+  minCoreRadius: Number(process.env.GRID_CORE_RADIUS ?? 2),
+  placement: process.env.GRID_PLACEMENT === "spiral" ? "spiral" : "nearest",
+  persistPath: process.env.GRID_PERSIST_PATH ?? path.join(process.cwd(), "data/grid.json"),
+});

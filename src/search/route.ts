@@ -73,8 +73,10 @@ export const searchRoutes = (opts: SearchRoutesOptions) =>
       "/search/browse",
       async ({ query }) => {
         const { q, n: nRaw, k: kRaw } = query as { q: string; n?: string; k?: string };
-        const n = Number(nRaw ?? 50);
-        const k = Number(kRaw ?? 4);
+        const MAX_N = Number(process.env.GRID_MAX_N ?? 200);
+        const MAX_K = Number(process.env.GRID_MAX_K ?? 20);
+        const n = Math.max(1, Math.min(Number(nRaw ?? 50), MAX_N));
+        const k = Math.max(1, Math.min(Number(kRaw ?? 4), MAX_K));
         if (!q) return Api.badRequest("q is required");
 
         const qEmb = await generateEmbedding(q);

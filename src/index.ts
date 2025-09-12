@@ -12,6 +12,7 @@ import { securityHeaders } from "./middleware/securityHeaders";
 import { requestLogger } from "./middleware/requestLogger";
 import { Logger } from "./logger";
 import { rateLimitPlugin } from "./middleware/rateLimit";
+import { adminRoutes } from "./admin/route";
 
 const prisma = new PrismaClient();
 
@@ -65,12 +66,14 @@ app
   .use(authRoutes({ prisma, prefix: "/auth" }))
   .use(wikiRoutes({ prisma, prefix: "/wiki" }))
   .use(searchRoutes({ prisma }))
+  .use(adminRoutes({ prisma, prefix: "/admin" }))
   // Error handling
   .onError(({ error, set, request }) => {
     // structured error log
     try { void Logger.error('unhandled', { path: new URL(request.url).pathname, error: String(error) }); } catch {}
     set.status = 500;
-    return Api.internalServerError(error);
+    const isProd = process.env.NODE_ENV === 'production';
+    return isProd ? Api.internalServerError("Internal server error") : Api.internalServerError(String(error));
   })
 
 try {

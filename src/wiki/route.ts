@@ -35,8 +35,10 @@ export const wikiRoutes = (opts: WikiRoutesOptions) =>
       "/browse/trending",
       async ({ query }) => {
         const { n: nRaw, k: kRaw } = query as { n?: string; k?: string };
-        const n = Number(nRaw ?? 50);
-        const k = Number(kRaw ?? 4);
+        const MAX_N = Number(process.env.GRID_MAX_N ?? 200);
+        const MAX_K = Number(process.env.GRID_MAX_K ?? 20);
+        const n = Math.max(1, Math.min(Number(nRaw ?? 50), MAX_N));
+        const k = Math.max(1, Math.min(Number(kRaw ?? 4), MAX_K));
 
         if (!Grid.isInitialized()) {
           await Grid.ensureInitialized(opts.prisma, n);
@@ -68,12 +70,14 @@ export const wikiRoutes = (opts: WikiRoutesOptions) =>
       "/browse/around/:id",
       async ({ params, query }) => {
         const { id } = params as { id: string };
-        const c = Number((query as any)?.c ?? 20);
+        const MAX_C = Number(process.env.GRID_MAX_C ?? 200);
+        const c = Math.max(1, Math.min(Number((query as any)?.c ?? 20), MAX_C));
         if (!Grid.isInitialized()) {
           await Grid.ensureInitialized(opts.prisma, Math.max(50, c));
           Grid.startCleanup();
         }
         const picked = Grid.getAround(id, c);
+        if (!picked.length) return Api.notFound("focus id not found in grid");
         const ids = picked.map((d) => d.id);
         const edges = Grid.buildEdges(ids, Math.min(4, Math.max(1, Math.floor(Math.sqrt(c)))));
         const nodes = picked.map((d) => ({ id: d.id, title: d.title, x: d.x, y: d.y, score: d.score, views: d.views, updatedAt: d.updatedAt }));
