@@ -9,6 +9,7 @@ import { DocumentSummarySchema, CreateDocumentBodySchema, CreateDocumentResponse
 import { flushDoc, loadDocToCache, updateCachedContent } from "../document/cache";
 import { BrowseResponseSchema, BrowseQuerySchema } from "../browse/schema";
 import { projectTo2D, buildKnnEdges } from "../browse/layout";
+import { Grid } from "../browse/grid";
 import { trendingScore as computeTrendingScore } from "../browse/score";
 
 interface WikiRoutesOptions {
@@ -29,7 +30,7 @@ const FLUSH_RATE_MS = 60_000;
 
 export const wikiRoutes = (opts: WikiRoutesOptions) =>
   new Elysia({ prefix: opts.prefix })
-    /* Browse: trending with 2D layout */
+    /* Browse: trending via central Grid map (integer grid, stable) */
     .get(
       "/browse/trending",
       async ({ query }) => {
@@ -37,61 +38,49 @@ export const wikiRoutes = (opts: WikiRoutesOptions) =>
         const n = Number(nRaw ?? 50);
         const k = Number(kRaw ?? 4);
 
-        const docs = await opts.prisma.document.findMany({
-          select: {
-            id: true,
-            title: true,
-            views: true,
-            updatedAt: true,
-            updatedCount: true,
-            embedding: true,
-            thumbnail: true,
-            words: true,
-          },
-        });
+        if (!Grid.isInitialized()) {
+          await Grid.ensureInitialized(opts.prisma, n);
+          Grid.startCleanup();
+        }
 
-        const scored = docs
-          .map((d) => ({
-            ...d,
-            score: computeTrendingScore(d.views ?? 0, d.updatedAt, d.updatedCount ?? 0),
-          }))
-          .sort((a, b) => b.score - a.score)
-          .slice(0, Math.max(0, n));
-
-        const withEmbeddings = await Promise.all(
-          scored.map(async (d) => {
-            let emb = (d.embedding as unknown as number[]) ?? [];
-            if (!Array.isArray(emb) || emb.length === 0) {
-              emb = await generateEmbedding(d.title);
-              await opts.prisma.document.update({ where: { id: d.id }, data: { embedding: emb } });
-            }
-            return { ...d, emb };
-          }),
-        );
-
-        const ids = withEmbeddings.map((d) => d.id);
-        const embs = withEmbeddings.map((d) => d.emb as number[]);
-        const { coords } = projectTo2D(embs);
-        const nodes = withEmbeddings.map((d, i) => ({
+        const nodesRaw = Grid.getNodes(n);
+        const ids = nodesRaw.map((d) => d.id);
+        const edges = Grid.buildEdges(ids, k);
+        const nodes = nodesRaw.map((d) => ({
           id: d.id,
-          image: d.thumbnail,
-          words: d.words,
           title: d.title,
-          x: coords[i]?.x ?? 0,
-          y: coords[i]?.y ?? 0,
+          x: d.x,
+          y: d.y,
           score: d.score,
           views: d.views,
-          updatedAt: d.updatedAt.toISOString(),
+          updatedAt: d.updatedAt,
         }));
-        const edges = buildKnnEdges(
-          ids,
-          embs,
-          Math.max(1, Math.min(k, Math.max(0, ids.length - 1))),
-        );
         return Api.success({ nodes, edges });
       },
       {
         query: BrowseQuerySchema,
+        response: ApiResponse(BrowseResponseSchema),
+      },
+    )
+
+    /* Browse: around a focused document id, return c docs from grid (BFS around) */
+    .get(
+      "/browse/around/:id",
+      async ({ params, query }) => {
+        const { id } = params as { id: string };
+        const c = Number((query as any)?.c ?? 20);
+        if (!Grid.isInitialized()) {
+          await Grid.ensureInitialized(opts.prisma, Math.max(50, c));
+          Grid.startCleanup();
+        }
+        const picked = Grid.getAround(id, c);
+        const ids = picked.map((d) => d.id);
+        const edges = Grid.buildEdges(ids, Math.min(4, Math.max(1, Math.floor(Math.sqrt(c)))));
+        const nodes = picked.map((d) => ({ id: d.id, title: d.title, x: d.x, y: d.y, score: d.score, views: d.views, updatedAt: d.updatedAt }));
+        return Api.success({ nodes, edges });
+      },
+      {
+        query: t.Object({ c: t.Optional(t.String()) }),
         response: ApiResponse(BrowseResponseSchema),
       },
     )
@@ -108,7 +97,6 @@ export const wikiRoutes = (opts: WikiRoutesOptions) =>
             contentMd: "",
             embedding,
             editable: true,
-            words: 0,
             tags: {
               connectOrCreate: (tags || []).map((tg) => ({
                 where: { content: tg },
@@ -201,6 +189,10 @@ export const wikiRoutes = (opts: WikiRoutesOptions) =>
                 return; // rate limited
               }
               await flushDoc(docId, opts.prisma, author);
+              // Update grid embedding for this document, keep position stable
+              try {
+                await Grid.onDocFlushed(opts.prisma, docId);
+              } catch {}
               authorLastFlush.set(author, Date.now());
               flushTimers.delete(docId);
             }, GRACE_MS),

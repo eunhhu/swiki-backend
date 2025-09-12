@@ -6,6 +6,7 @@ import { ApiResponse } from "../api/schema";
 import { SearchResultItemSchema } from "../wiki/schema";
 import { BrowseResponseSchema, SearchBrowseQuerySchema } from "../browse/schema";
 import { projectTo2D, buildKnnEdges } from "../browse/layout";
+import { Grid } from "../browse/grid";
 
 interface SearchRoutesOptions {
   prisma: PrismaClient;
@@ -79,43 +80,18 @@ export const searchRoutes = (opts: SearchRoutesOptions) =>
         const qEmb = await generateEmbedding(q);
         if (!qEmb.length) return Api.internalServerError("embedding failed");
 
-        const docs = await opts.prisma.document.findMany({
-          select: { id: true, title: true, views: true, updatedAt: true, embedding: true, thumbnail: true, words: true },
-        });
+        if (!Grid.isInitialized()) {
+          await Grid.ensureInitialized(opts.prisma, Math.max(50, n));
+          Grid.startCleanup();
+        }
 
-        const scored = await Promise.all(
-          docs.map(async (d) => {
-            let emb = (d.embedding as unknown as number[]) ?? [];
-            if (!Array.isArray(emb) || emb.length === 0) {
-              emb = await generateEmbedding(d.title);
-              await opts.prisma.document.update({ where: { id: d.id }, data: { embedding: emb } });
-            }
-            const score = cosineSim(qEmb, emb);
-            return { ...d, score, emb };
-          }),
-        );
-
-        scored.sort((a, b) => b.score - a.score);
-        const top = scored.slice(0, Math.max(0, n));
-        const ids = top.map((d) => d.id);
-        const embs = top.map((d) => d.emb as number[]);
-        const { coords } = projectTo2D(embs);
-        const nodes = top.map((d, i) => ({
-          id: d.id,
-          image: d.thumbnail,
-          words: d.words,
-          title: d.title,
-          x: coords[i]?.x ?? 0,
-          y: coords[i]?.y ?? 0,
-          score: d.score,
-          views: d.views,
-          updatedAt: d.updatedAt?.toISOString?.() ?? undefined,
-        }));
-        const edges = buildKnnEdges(
-          ids,
-          embs,
-          Math.max(1, Math.min(k, Math.max(0, ids.length - 1))),
-        );
+        const top = Grid.searchByEmbedding(qEmb, Math.max(1, n));
+        if (top.length === 0) return Api.success({ nodes: [], edges: [] });
+        const center = top[0];
+        const around = Grid.getAround(center.id, n);
+        const ids = around.map((d) => d.id);
+        const edges = Grid.buildEdges(ids, k);
+        const nodes = around.map((d) => ({ id: d.id, title: d.title, x: d.x, y: d.y, score: d.score, views: d.views, updatedAt: d.updatedAt }));
         return Api.success({ nodes, edges });
       },
       {
