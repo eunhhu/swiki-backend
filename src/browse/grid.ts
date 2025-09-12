@@ -11,8 +11,10 @@ export interface GridDocNode {
   x: number; // integer grid
   y: number; // integer grid
   score: number; // trending score or search score
-  views?: number;
-  updatedAt?: string;
+  words: number;
+  thumbnail?: string;
+  views: number;
+  updatedAt: string;
   emb: number[]; // embedding used for edges/search
 }
 
@@ -20,6 +22,8 @@ interface PlaceCandidate {
   id: string;
   title: string;
   views: number;
+  words: number;
+  thumbnail?: string;
   updatedAt: Date;
   updatedCount: number;
   emb: number[];
@@ -158,6 +162,8 @@ export class GridMapService {
         x: pos.x,
         y: pos.y,
         score: d.score,
+        words: d.words,
+        thumbnail: d.thumbnail ?? undefined,
         views: d.views,
         updatedAt: d.updatedAt.toISOString(),
         emb: d.emb,
@@ -210,6 +216,8 @@ export class GridMapService {
         y: pos.y,
         score: d.score,
         views: d.views,
+        words: d.words,
+        thumbnail: d.thumbnail ?? undefined,
         updatedAt: d.updatedAt.toISOString(),
         emb: d.emb,
       };
@@ -229,7 +237,7 @@ export class GridMapService {
       if (loaded) { this.initialized = true; return; }
 
       const docs = await prisma.document.findMany({
-      select: { id: true, title: true, views: true, updatedAt: true, updatedCount: true, embedding: true },
+      select: { id: true, title: true, views: true, words: true, updatedAt: true, updatedCount: true, embedding: true, thumbnail: true },
       });
       const scored = docs.map((d) => ({
       ...d,
@@ -255,6 +263,8 @@ export class GridMapService {
       updatedCount: d.updatedCount ?? 0,
       emb: d.emb,
       score: d.score,
+      words: d.words,
+      thumbnail: d.thumbnail ?? undefined,
       coord: coords[i] ?? { x: 0, y: 0 },
       }));
 
@@ -416,7 +426,7 @@ export class GridMapService {
       if (!data.nodes?.length) return false;
       // load docs by ids, attach embeddings
       const ids = data.nodes.map((n) => n.id);
-      const docs = await prisma.document.findMany({ where: { id: { in: ids } }, select: { id: true, title: true, views: true, updatedAt: true, embedding: true } });
+      const docs = await prisma.document.findMany({ where: { id: { in: ids } }, select: { id: true, title: true, views: true, words: true, thumbnail: true, updatedAt: true, embedding: true } });
       const byId: Record<string, typeof docs[number]> = Object.fromEntries(docs.map((d) => [d.id, d]));
       for (const n of data.nodes) {
         const d = byId[n.id];
@@ -433,6 +443,8 @@ export class GridMapService {
           y: n.y,
           score: trendingScore(d.views ?? 0, d.updatedAt, 0),
           views: d.views ?? 0,
+          words: d.words,
+          thumbnail: d.thumbnail ?? undefined,
           updatedAt: d.updatedAt.toISOString(),
           emb,
         };

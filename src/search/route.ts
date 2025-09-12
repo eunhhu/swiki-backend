@@ -93,7 +93,25 @@ export const searchRoutes = (opts: SearchRoutesOptions) =>
         const around = Grid.getAround(center.id, n);
         const ids = around.map((d) => d.id);
         const edges = Grid.buildEdges(ids, k);
-        const nodes = around.map((d) => ({ id: d.id, title: d.title, x: d.x, y: d.y, score: d.score, views: d.views, updatedAt: d.updatedAt }));
+        const metaList = await opts.prisma.document.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, words: true, thumbnail: true },
+        });
+        const metaById = Object.fromEntries(metaList.map((m) => [m.id, m] as const));
+        const nodes = around.map((d) => {
+          const fallbackImg = `https://picsum.photos/seed/${encodeURIComponent(d.id)}/1080/1080`;
+          return {
+            id: d.id,
+            title: d.title,
+            image: metaById[d.id]?.thumbnail ?? fallbackImg,
+            words: metaById[d.id]?.words ?? 0,
+            x: d.x,
+            y: d.y,
+            score: d.score,
+            views: d.views ?? 0,
+            updatedAt: d.updatedAt,
+          };
+        });
         return Api.success({ nodes, edges });
       },
       {

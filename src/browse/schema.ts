@@ -4,12 +4,12 @@ export const BrowseNodeSchema = t.Object({
   id: t.String(),
   title: t.String(),
   image: t.Optional(t.String()),
-  words: t.Optional(t.Number()),
+  words: t.Number(),
   x: t.Integer(),
   y: t.Integer(),
   score: t.Number(),
-  views: t.Optional(t.Number()),
-  updatedAt: t.Optional(t.String({ format: "date-time" })),
+  views: t.Number(),
+  updatedAt: t.String({ format: "date-time" }),
 });
 
 export const BrowseEdgeSchema = t.Object({
