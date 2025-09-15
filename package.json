@@ -24,10 +24,11 @@
     "@sinclair/typebox": "^0.34.40",
     "argon2": "^0.44.0",
     "elysia": "latest",
+    "lib0": "^0.2.102",
     "openai": "^5.16.0",
     "prismabox": "^1.1.25",
-    "ws": "^8.18.3",
-    "y-websocket": "^3.0.0",
+    "ws": "^8.18.0",
+    "y-protocols": "^1.0.5",
     "yjs": "^13.6.27"
   },
   "devDependencies": {
