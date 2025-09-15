@@ -5,7 +5,6 @@ import { Api } from "../api/util";
 import { ApiResponse } from "../api/schema";
 import { SearchResultItemSchema } from "../wiki/schema";
 import { BrowseResponseSchema, SearchBrowseQuerySchema } from "../browse/schema";
-import { projectTo2D, buildKnnEdges } from "../browse/layout";
 import { Grid } from "../browse/grid";
 
 interface SearchRoutesOptions {
@@ -59,7 +58,22 @@ export const searchRoutes = (opts: SearchRoutesOptions) =>
         );
 
         scored.sort((a, b) => b.score - a.score);
-        return Api.success(scored.slice(0, topK));
+        const top = scored.slice(0, topK);
+        // Ensure these results are placed onto the grid and return with coordinates
+        try {
+          if (!Grid.isInitialized()) {
+            await Grid.ensureInitialized(opts.prisma, Math.max(50, topK));
+            Grid.startCleanup();
+          }
+          const ids = top.map((d) => d.id);
+          const nodes = await Grid.ensureNodesPlacedByIds(opts.prisma, ids);
+          const byId = Object.fromEntries(nodes.map((n) => [n.id, n] as const));
+          const withPos = top.map((d) => ({ ...d, x: byId[d.id]?.x, y: byId[d.id]?.y }));
+          return Api.success(withPos);
+        } catch {
+          // Fallback: return without coordinates if grid service fails
+          return Api.success(top);
+        }
       },
       {
         query: t.Object({
@@ -87,10 +101,27 @@ export const searchRoutes = (opts: SearchRoutesOptions) =>
           Grid.startCleanup();
         }
 
-        const top = Grid.searchByEmbedding(qEmb, Math.max(1, n));
-        if (top.length === 0) return Api.success({ nodes: [], edges: [] });
-        const center = top[0];
-        const around = Grid.getAround(center.id, n);
+        // DB-level search for best matches to ensure placement of missing docs
+        const docs = await opts.prisma.document.findMany({
+          select: { id: true, title: true, embedding: true },
+        });
+        const scored = await Promise.all(
+          docs.map(async (d) => {
+            let emb = (d.embedding ?? []) as number[];
+            if (!emb.length) {
+              emb = await generateEmbedding(d.title);
+              await opts.prisma.document.update({ where: { id: d.id }, data: { embedding: emb } });
+            }
+            const score = cosineSim(qEmb, emb);
+            return { id: d.id, title: d.title, score };
+          }),
+        );
+        scored.sort((a, b) => b.score - a.score);
+        if (scored.length === 0) return Api.success({ nodes: [], edges: [] });
+        const batchIds = scored.slice(0, Math.max(1, Math.min(n, 50))).map((s) => s.id);
+        const placed = await Grid.ensureNodesPlacedByIds(opts.prisma, batchIds);
+        const centerId = scored[0].id;
+        const around = Grid.getAround(centerId, n);
         const ids = around.map((d) => d.id);
         const edges = Grid.buildEdges(ids, k);
         const metaList = await opts.prisma.document.findMany({

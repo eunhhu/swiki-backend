@@ -24,5 +24,9 @@ export const CreateDocumentResponseSchema = t.Object({ id: t.String() });
 
 export const SearchResultItemSchema = t.Intersect([
   DocumentSummarySchema,
-  t.Object({ score: t.Number() }),
+  t.Object({
+    score: t.Number(),
+    x: t.Optional(t.Integer()),
+    y: t.Optional(t.Integer()),
+  }),
 ]);

@@ -1,6 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { generateEmbedding } from "../embedding";
-import { projectTo2D, buildKnnEdges, type Embedding, type Vec2, type Edge } from "./layout";
+import { projectTo2D, buildKnnEdges, cosineSim, type Embedding, type Vec2, type Edge } from "./layout";
 import { trendingScore } from "./score";
 import * as fs from "fs";
 import * as path from "path";
@@ -365,6 +365,91 @@ export class GridMapService {
       if (firstKey) this.edgesCache.delete(firstKey);
     }
     return edges;
+  }
+
+  // Estimate a good target coordinate for a new embedding by weighted average
+  // of the k nearest existing nodes in embedding space.
+  private estimateTargetCoord(emb: number[], kNeighbors: number = 8): { x: number; y: number } {
+    if (this.docsById.size === 0) return { x: 0, y: 0 };
+    const all = Array.from(this.docsById.values());
+    const scored = all
+      .map((n) => ({ n, s: cosineSim(emb, n.emb) }))
+      .sort((a, b) => b.s - a.s)
+      .slice(0, Math.max(1, Math.min(kNeighbors, all.length)));
+    let wx = 0, wy = 0, sw = 0;
+    for (const { n, s } of scored) {
+      const w = Math.max(0, Number.isFinite(s) ? s : 0);
+      wx += w * n.x;
+      wy += w * n.y;
+      sw += w;
+    }
+    const tx = sw > 0 ? wx / sw : 0;
+    const ty = sw > 0 ? wy / sw : 0;
+    return { x: tx, y: ty };
+  }
+
+  // Place any missing documents by IDs onto the grid and return their nodes.
+  async ensureNodesPlacedByIds(prisma: PrismaClient, ids: string[]): Promise<GridDocNode[]> {
+    return this.withLock(async () => {
+      const out: GridDocNode[] = [];
+      const missing: string[] = [];
+      for (const id of ids) {
+        const ex = this.docsById.get(id);
+        if (ex) {
+          out.push(ex);
+          this.lastAccess.set(id, now());
+        } else {
+          missing.push(id);
+        }
+      }
+      if (missing.length === 0) return out;
+
+      const docs = await prisma.document.findMany({
+        where: { id: { in: missing } },
+        select: {
+          id: true,
+          title: true,
+          views: true,
+          words: true,
+          thumbnail: true,
+          updatedAt: true,
+          updatedCount: true,
+          embedding: true,
+        },
+      });
+      for (const d of docs) {
+        let emb = Array.isArray(d.embedding) ? (d.embedding as number[]) : [];
+        if (!emb.length) {
+          emb = await generateEmbedding(d.title);
+          await prisma.document.update({ where: { id: d.id }, data: { embedding: emb } });
+        }
+        const target = this.estimateTargetCoord(emb);
+        const pos = this.nearestFreeCellApprox(target.x, target.y);
+        const node: GridDocNode = {
+          id: d.id,
+          title: d.title,
+          x: pos.x,
+          y: pos.y,
+          score: trendingScore(d.views ?? 0, d.updatedAt, d.updatedCount ?? 0),
+          views: d.views ?? 0,
+          words: d.words,
+          thumbnail: d.thumbnail ?? undefined,
+          updatedAt: d.updatedAt.toISOString(),
+          emb,
+        };
+        this.docsById.set(d.id, node);
+        this.idByCell.set(cellKey(pos.x, pos.y), d.id);
+        this.placedOrder.push(d.id);
+        this.lastAccess.set(d.id, now());
+        out.push(node);
+      }
+      if (this.persistPath) {
+        try {
+          this.saveToDisk();
+        } catch {}
+      }
+      return out;
+    });
   }
 
   async onDocFlushed(prisma: PrismaClient, id: string) {
