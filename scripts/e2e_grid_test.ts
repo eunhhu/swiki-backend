@@ -74,14 +74,14 @@ async function main() {
   const sTrend = summarize(trending.data.nodes, "trending");
   console.log(JSON.stringify({ endpoint: "/wiki/browse/trending", ...sTrend }));
 
-  // 2) Around (BFS neighborhood) for first node
-  const centerId = trending.data.nodes[0]?.id;
-  if (!centerId) throw new Error("no nodes from trending");
-  const aroundUrl = `${base}/wiki/browse/around/${centerId}?c=10`;
+  // 2) Around (BFS neighborhood) for first node by coordinate
+  const center = trending.data.nodes[0];
+  if (!center) throw new Error("no nodes from trending");
+  const aroundUrl = `${base}/wiki/browse/around?x=${center.x}&y=${center.y}&c=10`;
   const around = await getJson<BrowseData>(aroundUrl);
   if (!around.success || !around.data) throw new Error("around failed");
   const sAround = summarize(around.data.nodes, "around");
-  console.log(JSON.stringify({ endpoint: "/wiki/browse/around/:id", centerId, ...sAround }));
+  console.log(JSON.stringify({ endpoint: "/wiki/browse/around?x&y", centerX: center.x, centerY: center.y, ...sAround }));
 
   // 3) Search-browse anchored to loaded grid
   const searchUrl = `${base}/search/browse?q=${encodeURIComponent(q)}&n=6&k=4`;

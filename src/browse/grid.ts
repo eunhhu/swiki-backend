@@ -332,6 +332,25 @@ export class GridMapService {
     return result;
   }
 
+  // Return around documents based on an (x, y) grid coordinate rather than a document id.
+  // It finds the nearest occupied cell to the given coordinate and then reuses getAround.
+  getAroundCoord(x: number, y: number, c: number): GridDocNode[] {
+    const qx = Math.round(x);
+    const qy = Math.round(y);
+    let startId: string | null = this.idByCell.get(cellKey(qx, qy)) ?? null;
+    if (!startId) {
+      // expand outward in rings until we find any occupied cell
+      for (let r = 1; r <= 2048 && !startId; r++) {
+        for (const p of this.ringNeighbors(qx, qy, r)) {
+          const id = this.idByCell.get(cellKey(p.x, p.y));
+          if (id) { startId = id; break; }
+        }
+      }
+    }
+    if (!startId) return [];
+    return this.getAround(startId, c);
+  }
+
   searchByEmbedding(qEmb: number[], n: number): GridDocNode[] {
     // cosine similarity against loaded docs
     function cos(a: number[], b: number[]): number {

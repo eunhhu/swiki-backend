@@ -79,19 +79,26 @@ export const wikiRoutes = (opts: WikiRoutesOptions) =>
       },
     )
 
-    /* Browse: around a focused document id, return c docs from grid (BFS around) */
+    /* Browse: around a focused coordinate (x, y), return c docs from grid (BFS around nearest cell) */
     .get(
-      "/browse/around/:id",
-      async ({ params, query }) => {
-        const { id } = params as { id: string };
+      "/browse/around",
+      async ({ query }) => {
+        const { x: xRaw, y: yRaw, c: cRaw } = query as { x?: string; y?: string; c?: string };
+        if (typeof xRaw === "undefined" || typeof yRaw === "undefined") {
+          return Api.badRequest("x and y are required");
+        }
+        const x = Number(xRaw), y = Number(yRaw);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+          return Api.badRequest("x and y must be numbers");
+        }
         const MAX_C = Number(process.env.GRID_MAX_C ?? 200);
-        const c = Math.max(1, Math.min(Number((query as any)?.c ?? 20), MAX_C));
+        const c = Math.max(1, Math.min(Number(cRaw ?? 20), MAX_C));
         if (!Grid.isInitialized()) {
           await Grid.ensureInitialized(opts.prisma, Math.max(50, c));
           Grid.startCleanup();
         }
-        const picked = Grid.getAround(id, c);
-        if (!picked.length) return Api.notFound("focus id not found in grid");
+        const picked = Grid.getAroundCoord(x, y, c);
+        if (!picked.length) return Api.notFound("focus coordinate not found in grid");
         const ids = picked.map((d) => d.id);
         const edges = Grid.buildEdges(ids, Math.min(4, Math.max(1, Math.floor(Math.sqrt(c)))));
         const metaList = await opts.prisma.document.findMany({
@@ -116,7 +123,7 @@ export const wikiRoutes = (opts: WikiRoutesOptions) =>
         return Api.success({ nodes, edges });
       },
       {
-        query: t.Object({ c: t.Optional(t.String()) }),
+        query: t.Object({ x: t.String(), y: t.String(), c: t.Optional(t.String()) }),
         response: ApiResponse(BrowseResponseSchema),
       },
     )

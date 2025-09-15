@@ -51,9 +51,10 @@ Open http://localhost:3000/ with your browser to see the result.
      - 시나리오: 트렌딩 문서를 그래프(노드/간선) 형태로 조회합니다.
      - 인풋 Query: `n`(노드 수, 기본 50), `k`(간선 수, 기본 4)
      - 출력: `{ nodes: [...], edges: [...] }`
-  2. **GET `/wiki/browse/around/:id`**
-     - 시나리오: 특정 문서(`id`)를 중심으로 주변 문서를 조회합니다.
-     - 인풋: URL 파라미터 `id`, Query `c`(반경 내 문서 수)
+  2. **GET `/wiki/browse/around`**
+     - 시나리오: 특정 좌표(`x`,`y`)를 중심으로 주변 문서를 조회합니다.
+     - 인풋 Query: `x`(정수 또는 숫자 문자열), `y`(정수 또는 숫자 문자열), `c`(반경 내 문서 수, 선택)
+     - 동작: 전달된 좌표와 가장 가까운 점유 셀을 기준으로 BFS로 주변 문서를 수집합니다.
      - 출력: 노드·에지 리스트.
   3. **POST `/wiki/documents`**
      - 시나리오: 새 문서를 생성합니다.
