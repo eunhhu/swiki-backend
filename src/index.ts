@@ -13,6 +13,7 @@ import { requestLogger } from "./middleware/requestLogger";
 import { Logger } from "./logger";
 import { rateLimitPlugin } from "./middleware/rateLimit";
 import { adminRoutes } from "./admin/route";
+import { startYWebsocketServer } from "./yws/server";
 
 const prisma = new PrismaClient();
 
@@ -23,12 +24,19 @@ prisma.$connect().then(() => {
 });
 
 const PORT = Number(process.env.PORT ?? 8000);
+const YWS_PORT = Number(process.env.YWS_PORT ?? 8001);
+const YWS_PATH = process.env.YWS_PATH ?? "/yws";
 
 const app = new Elysia();
 
 // Plugins
 app.use(cors({
-  origin: process.env.ALLOWED_ORIGINS?.split(",") || ["http://localhost:3000", `http://localhost:${PORT}`],
+  origin:
+    process.env.ALLOWED_ORIGINS?.split(",") || [
+      "http://localhost:3000",
+      `http://localhost:${PORT}`,
+      "http://localhost:5173",
+    ],
   credentials: true,
 }));
 app.use(cookie());
@@ -77,10 +85,17 @@ app
   })
 
 try {
+  // Start y-websocket server for collaborative editing
+  try {
+    startYWebsocketServer({ port: YWS_PORT, path: YWS_PATH });
+  } catch (e) {
+    console.error("Failed to start y-websocket server", e);
+  }
   const started = app.listen(PORT, () => {
     console.log("Server is running on *:" + PORT.toString());
   });
   console.log(`Server listening on http://localhost:${PORT}`);
+  console.log(`Y-WebSocket at ws://localhost:${YWS_PORT}${YWS_PATH}/:room`);
 } catch (e) {
   console.error(`Failed to start server. Is port ${PORT} in use?`, e);
   process.exit(1);

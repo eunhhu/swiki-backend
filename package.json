@@ -25,9 +25,13 @@
     "argon2": "^0.44.0",
     "elysia": "latest",
     "openai": "^5.16.0",
-    "prismabox": "^1.1.25"
+    "prismabox": "^1.1.25",
+    "ws": "^8.18.3",
+    "y-websocket": "^3.0.0",
+    "yjs": "^13.6.27"
   },
   "devDependencies": {
+    "@types/ws": "^8.18.1",
     "bun-types": "latest"
   },
   "module": "src/index.js"

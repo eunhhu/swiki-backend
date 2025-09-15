@@ -36,6 +36,8 @@ model Document {
   id           String @id @default(uuid())
   title        String
   contentMd    String
+  // Optional BlockNote JSON snapshot used by FE for initial load
+  contentJson  Json?
   words        Int @default(0)
   thumbnail    String? // Base64 Incoded image
   views        Int @default(0)

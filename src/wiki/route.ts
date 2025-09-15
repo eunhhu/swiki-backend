@@ -2,10 +2,11 @@ import { Elysia, t } from "elysia";
 import type { PrismaClient } from "@prisma/client";
 import { TagType } from "@prisma/client";
 import { Api } from "../api/util";
+import { mkdir } from "node:fs/promises";
 import { generateEmbedding } from "../embedding";
 import { hashIpUa } from "../document/hash";
 import { ApiResponse } from "../api/schema";
-import { DocumentSummarySchema, CreateDocumentBodySchema, CreateDocumentResponseSchema } from "./schema";
+import { DocumentSummarySchema, CreateDocumentBodySchema, CreateDocumentResponseSchema, DocumentSchema, DocCreateBodySchema, DocPatchBodySchema } from "./schema";
 import { flushDoc, loadDocToCache, updateCachedContent } from "../document/cache";
 import { BrowseResponseSchema, BrowseQuerySchema } from "../browse/schema";
 import { projectTo2D, buildKnnEdges } from "../browse/layout";
@@ -27,6 +28,9 @@ const authorLastFlush = new Map<string, number>();
 const docPresence = new Map<string, Map<string, { color: string }>>();
 const GRACE_MS = 5 * 60_000; // 5 minutes
 const FLUSH_RATE_MS = 60_000;
+// Debounced grid update timers for REST-based content updates
+const gridUpdateTimers = new Map<string, NodeJS.Timeout>();
+const GRID_UPDATE_DEBOUNCE_MS = 60_000;
 
 export const wikiRoutes = (opts: WikiRoutesOptions) =>
   new Elysia({ prefix: opts.prefix })
@@ -143,6 +147,121 @@ export const wikiRoutes = (opts: WikiRoutesOptions) =>
       {
         body: CreateDocumentBodySchema,
         response: ApiResponse(CreateDocumentResponseSchema),
+      },
+    )
+
+    /* FE-aligned: create a document (title optional) */
+    .post(
+      "/docs",
+      async ({ body }) => {
+        const { title, content, tags } = (body || {}) as {
+          title?: string;
+          content?: unknown;
+          tags?: string[];
+        };
+        const safeTitle = (title && title.trim()) || "Untitled";
+        const embedding = await generateEmbedding(safeTitle);
+        const created = await opts.prisma.document.create({
+          data: {
+            title: safeTitle,
+            contentMd: "",
+            contentJson: content as any,
+            embedding,
+            editable: true,
+            tags: {
+              connectOrCreate: (tags || []).map((tg) => ({
+                where: { content: tg },
+                create: { type: TagType.CUSTOM, content: tg },
+              })),
+            },
+          } as any,
+        });
+        return Api.success({ id: created.id, title: created.title, content: (created as any).contentJson });
+      },
+      {
+        body: DocCreateBodySchema,
+        response: ApiResponse(DocumentSchema),
+      },
+    )
+
+    /* FE-aligned: get a document detail */
+    .get(
+      "/docs/:id",
+      async ({ params }) => {
+        const { id } = params as { id: string };
+        const doc = await opts.prisma.document.findUnique({ where: { id } });
+        if (!doc) return Api.notFound("document not found");
+        return Api.success({ id: doc.id, title: doc.title, content: (doc as any).contentJson });
+      },
+      {
+        response: ApiResponse(DocumentSchema),
+      },
+    )
+
+    /* FE-aligned: update document title and/or content (BlockNote JSON) */
+    .patch(
+      "/docs/:id",
+      async ({ params, body }) => {
+        const { id } = params as { id: string };
+        const { title, content } = (body || {}) as { title?: string; content?: unknown };
+        const data: any = {};
+        if (typeof title === "string" && title.trim().length > 0) data.title = title.trim();
+        if (typeof content !== "undefined") {
+          data.contentJson = content as any;
+          // lightweight word estimation from JSON text fields
+          try {
+            const text = JSON.stringify(content);
+            const words = text ? text.split(/\s+/g).filter(Boolean).length : 0;
+            data.words = words;
+            data.updatedCount = { increment: 1 } as any;
+          } catch {}
+        }
+        if (!Object.keys(data).length) return Api.badRequest("no-op");
+        const updated = await opts.prisma.document.update({ where: { id }, data: data as any });
+        // Schedule grid update debounced to avoid excessive recomputation
+        try {
+          if (gridUpdateTimers.has(id)) clearTimeout(gridUpdateTimers.get(id)!);
+          gridUpdateTimers.set(
+            id,
+            setTimeout(async () => {
+              try { await Grid.onDocFlushed(opts.prisma, id); } catch {}
+              gridUpdateTimers.delete(id);
+            }, GRID_UPDATE_DEBOUNCE_MS),
+          );
+        } catch {}
+        return Api.success({ id: updated.id, title: updated.title, content: (updated as any).contentJson });
+      },
+      {
+        body: DocPatchBodySchema,
+        response: ApiResponse(DocumentSchema),
+      },
+    )
+
+    /* FE-aligned: upload endpoint for images/files used by BlockNote */
+    .post(
+      "/uploads",
+      async ({ request }) => {
+        try {
+          const form = await request.formData();
+          const file = form.get("file");
+          if (!file || typeof file === "string") {
+            return Api.badRequest("file is required");
+          }
+          const original = (file as any).name || "upload.bin";
+          const safeName = `${Date.now()}_${original.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+          const dir = "public/uploads";
+          await mkdir(dir, { recursive: true });
+          await Bun.write(`${dir}/${safeName}`, file as any);
+          // build absolute URL from request origin
+          const origin = new URL(request.url).origin;
+          const url = `${origin}/uploads/${safeName}`;
+          return Api.success({ url });
+        } catch (e) {
+          return Api.internalServerError(String(e));
+        }
+      },
+      {
+        response: ApiResponse(t.Object({ url: t.String() })),
       },
     )
 
