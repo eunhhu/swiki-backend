@@ -3,7 +3,7 @@ import { t } from "elysia";
 export const BrowseNodeSchema = t.Object({
   id: t.String(),
   title: t.String(),
-  image: t.Optional(t.String()),
+  image: t.String(),
   words: t.Number(),
   x: t.Integer(),
   y: t.Integer(),
@@ -20,7 +20,7 @@ export const BrowseEdgeSchema = t.Object({
 
 export const BrowseResponseSchema = t.Object({
   nodes: t.Array(BrowseNodeSchema),
-  edges: t.Array(BrowseEdgeSchema),
+  // edges: t.Array(BrowseEdgeSchema),
 });
 
 export const BrowseQuerySchema = t.Object({

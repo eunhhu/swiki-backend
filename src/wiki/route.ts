@@ -71,7 +71,7 @@ export const wikiRoutes = (opts: WikiRoutesOptions) =>
             updatedAt: d.updatedAt,
           };
         });
-        return Api.success({ nodes, edges });
+        return Api.success({ nodes });
       },
       {
         query: BrowseQuerySchema,
@@ -120,7 +120,7 @@ export const wikiRoutes = (opts: WikiRoutesOptions) =>
             updatedAt: d.updatedAt,
           };
         });
-        return Api.success({ nodes, edges });
+        return Api.success({ nodes });
       },
       {
         query: t.Object({ x: t.String(), y: t.String(), c: t.Optional(t.String()) }),
