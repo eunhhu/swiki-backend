@@ -325,20 +325,23 @@ export class GridMapService {
   // Return around documents based on an (x, y) grid coordinate rather than a document id.
   // It finds the nearest occupied cell to the given coordinate and then reuses getAround.
   getAroundCoord(x: number, y: number, c: number): GridDocNode[] {
-    const qx = Math.round(x);
-    const qy = Math.round(y);
-    let startId: string | null = this.idByCell.get(cellKey(qx, qy)) ?? null;
-    if (!startId) {
-      // expand outward in rings until we find any occupied cell
-      for (let r = 1; r <= 2048 && !startId; r++) {
-        for (const p of this.ringNeighbors(qx, qy, r)) {
-          const id = this.idByCell.get(cellKey(p.x, p.y));
-          if (id) { startId = id; break; }
-        }
-      }
-    }
-    if (!startId) return [];
-    return this.getAround(startId, c);
+    if (this.docsById.size === 0) return [];
+    const normalized = Number.isFinite(c) ? Math.floor(c) : 1;
+    const limit = Math.max(1, Math.min(normalized, this.docsById.size));
+    const ranked = Array.from(this.docsById.values())
+      .map((node) => ({
+        node,
+        dist: Math.hypot(node.x - x, node.y - y),
+      }))
+      .sort((a, b) => {
+        if (a.dist !== b.dist) return a.dist - b.dist;
+        if (b.node.score !== a.node.score) return b.node.score - a.node.score;
+        return a.node.id.localeCompare(b.node.id);
+      })
+      .slice(0, limit)
+      .map((entry) => entry.node);
+    for (const n of ranked) this.lastAccess.set(n.id, now());
+    return ranked;
   }
 
   searchByEmbedding(qEmb: number[], n: number): GridDocNode[] {

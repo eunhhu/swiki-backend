@@ -32,26 +32,25 @@ const FLUSH_RATE_MS = 60_000;
 const gridUpdateTimers = new Map<string, NodeJS.Timeout>();
 const GRID_UPDATE_DEBOUNCE_MS = 60_000;
 
+const asPositiveInt = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.floor(value);
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+  }
+  return null;
+};
 export const wikiRoutes = (opts: WikiRoutesOptions) =>
   new Elysia({ prefix: opts.prefix })
     /* Browse: trending via central Grid map (integer grid, stable) */
     .get(
       "/browse/trending",
       async ({ query }) => {
-        const { n: nRaw, count: countRaw } = query as { n?: string; count?: string };
+        const { n: nRaw, count: countRaw } = query as { n?: string | number; count?: string | number };
         const MAX_N = Number(process.env.GRID_MAX_N ?? 200);
 
-        const countCandidates = [countRaw, nRaw];
-        let resolvedCount = 50;
-        for (const candidate of countCandidates) {
-          if (typeof candidate === "undefined") continue;
-          const parsed = Number(candidate);
-          if (Number.isFinite(parsed) && parsed > 0) {
-            resolvedCount = parsed;
-            break;
-          }
-        }
-        const n = Math.max(1, Math.min(resolvedCount, MAX_N));
+        const requestedCount = asPositiveInt(countRaw) ?? asPositiveInt(nRaw) ?? 50;
+        const n = Math.max(1, Math.min(requestedCount, MAX_N));
 
         const bootstrapCount = Math.max(50, n);
         if (!Grid.isInitialized()) {
@@ -119,7 +118,7 @@ export const wikiRoutes = (opts: WikiRoutesOptions) =>
     .get(
       "/browse/around",
       async ({ query }) => {
-        const { x: xRaw, y: yRaw, c: cRaw } = query as { x?: string; y?: string; c?: string };
+        const { x: xRaw, y: yRaw, c: cRaw } = query as { x?: string; y?: string; c?: string | number };
         if (typeof xRaw === "undefined" || typeof yRaw === "undefined") {
           return Api.badRequest("x and y are required");
         }
@@ -128,7 +127,8 @@ export const wikiRoutes = (opts: WikiRoutesOptions) =>
           return Api.badRequest("x and y must be numbers");
         }
         const MAX_C = Number(process.env.GRID_MAX_C ?? 200);
-        const c = Math.max(1, Math.min(Number(cRaw ?? 20), MAX_C));
+        const requestedCount = asPositiveInt(cRaw) ?? 20;
+        const c = Math.max(1, Math.min(requestedCount, MAX_C));
         if (!Grid.isInitialized()) {
           await Grid.ensureInitialized(opts.prisma, Math.max(50, c));
           Grid.startCleanup();

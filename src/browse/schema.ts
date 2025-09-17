@@ -26,7 +26,7 @@ export const BrowseResponseSchema = t.Object({
 export const BrowseQuerySchema = t.Object({
   n: t.Optional(t.String()),
   k: t.Optional(t.String()),
-  count: t.Optional(t.String()),
+  count: t.Optional(t.Union([t.String(), t.Number()])),
 });
 
 export const SearchBrowseQuerySchema = t.Object({
