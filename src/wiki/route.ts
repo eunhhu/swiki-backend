@@ -38,39 +38,75 @@ export const wikiRoutes = (opts: WikiRoutesOptions) =>
     .get(
       "/browse/trending",
       async ({ query }) => {
-        const { n: nRaw, k: kRaw } = query as { n?: string; k?: string };
+        const { n: nRaw, count: countRaw } = query as { n?: string; count?: string };
         const MAX_N = Number(process.env.GRID_MAX_N ?? 200);
-        const MAX_K = Number(process.env.GRID_MAX_K ?? 20);
-        const n = Math.max(1, Math.min(Number(nRaw ?? 50), MAX_N));
-        const k = Math.max(1, Math.min(Number(kRaw ?? 4), MAX_K));
 
+        const countCandidates = [countRaw, nRaw];
+        let resolvedCount = 50;
+        for (const candidate of countCandidates) {
+          if (typeof candidate === "undefined") continue;
+          const parsed = Number(candidate);
+          if (Number.isFinite(parsed) && parsed > 0) {
+            resolvedCount = parsed;
+            break;
+          }
+        }
+        const n = Math.max(1, Math.min(resolvedCount, MAX_N));
+
+        const bootstrapCount = Math.max(50, n);
         if (!Grid.isInitialized()) {
-          await Grid.ensureInitialized(opts.prisma, n);
+          await Grid.ensureInitialized(opts.prisma, bootstrapCount);
           Grid.startCleanup();
         }
 
-        const nodesRaw = Grid.getNodes(n);
-        const ids = nodesRaw.map((d) => d.id);
-        const edges = Grid.buildEdges(ids, k);
-        const metaList = await opts.prisma.document.findMany({
-          where: { id: { in: ids } },
-          select: { id: true, words: true, thumbnail: true },
+        const docs = await opts.prisma.document.findMany({
+          select: {
+            id: true,
+            title: true,
+            views: true,
+            words: true,
+            thumbnail: true,
+            updatedAt: true,
+            updatedCount: true,
+          },
         });
-        const metaById = Object.fromEntries(metaList.map((m) => [m.id, m] as const));
-        const nodes = nodesRaw.map((d) => {
-          const fallbackImg = `https://picsum.photos/seed/${encodeURIComponent(d.id)}/1080/1080`;
-          return {
+
+        const ranked = docs
+          .map((d) => ({
             id: d.id,
             title: d.title,
-            image: metaById[d.id]?.thumbnail ?? fallbackImg,
-            words: metaById[d.id]?.words ?? 0,
-            x: d.x,
-            y: d.y,
-            score: d.score,
             views: d.views ?? 0,
+            words: d.words ?? 0,
+            thumbnail: d.thumbnail ?? null,
             updatedAt: d.updatedAt,
+            score: computeTrendingScore(d.views ?? 0, d.updatedAt, d.updatedCount ?? 0),
+          }))
+          .sort((a, b) => b.score - a.score)
+          .slice(0, n);
+
+        if (!ranked.length) return Api.success({ nodes: [] });
+
+        const ids = ranked.map((d) => d.id);
+        await Grid.ensureNodesPlacedByIds(opts.prisma, ids);
+        const nodesRaw = Grid.getByIds(ids);
+        const byId = new Map(nodesRaw.map((node) => [node.id, node] as const));
+
+        const nodes = ranked.map((doc) => {
+          const node = byId.get(doc.id);
+          const fallbackImg = `https://picsum.photos/seed/${encodeURIComponent(doc.id)}/1080/1080`;
+          return {
+            id: doc.id,
+            title: doc.title,
+            image: doc.thumbnail ?? fallbackImg,
+            words: doc.words ?? node?.words ?? 0,
+            x: node?.x ?? 0,
+            y: node?.y ?? 0,
+            score: node?.score ?? doc.score,
+            views: node?.views ?? doc.views,
+            updatedAt: node?.updatedAt ?? doc.updatedAt.toISOString(),
           };
         });
+
         return Api.success({ nodes });
       },
       {

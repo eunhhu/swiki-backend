@@ -303,33 +303,23 @@ export class GridMapService {
   }
 
   getAround(docId: string, c: number): GridDocNode[] {
-    const start = this.docsById.get(docId);
-    if (!start) return [];
-    const visited = new Set<string>();
-    const q: { x: number; y: number }[] = [{ x: start.x, y: start.y }];
-    const result: GridDocNode[] = [];
-    while (q.length && result.length < c) {
-      const p = q.shift()!;
-      const id = this.idByCell.get(cellKey(p.x, p.y));
-      if (id && !visited.has(id)) {
-        visited.add(id);
-        const n = this.docsById.get(id)!;
-        result.push(n);
-        this.lastAccess.set(id, now());
-      }
-      // 4-neighborhood
-      const neigh = [
-        { x: p.x + 1, y: p.y },
-        { x: p.x - 1, y: p.y },
-        { x: p.x, y: p.y + 1 },
-        { x: p.x, y: p.y - 1 },
-      ];
-      for (const nb of neigh) {
-        const nid = this.idByCell.get(cellKey(nb.x, nb.y));
-        if (nid && !visited.has(nid)) q.push(nb);
-      }
-    }
-    return result;
+    const focus = this.docsById.get(docId);
+    if (!focus) return [];
+    const all = Array.from(this.docsById.values());
+    const ranked = all
+      .map((node) => ({
+        node,
+        dist: Math.abs(node.x - focus.x) + Math.abs(node.y - focus.y),
+      }))
+      .sort((a, b) => {
+        if (a.dist !== b.dist) return a.dist - b.dist;
+        if (b.node.score !== a.node.score) return b.node.score - a.node.score;
+        return a.node.id.localeCompare(b.node.id);
+      })
+      .slice(0, Math.max(0, Math.min(c, all.length)))
+      .map((entry) => entry.node);
+    for (const n of ranked) this.lastAccess.set(n.id, now());
+    return ranked;
   }
 
   // Return around documents based on an (x, y) grid coordinate rather than a document id.
