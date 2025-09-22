@@ -135,6 +135,19 @@ export const wikiRoutes = (opts: WikiRoutesOptions) =>
         }
         const picked = Grid.getAroundCoord(x, y, c);
         if (!picked.length) return Api.notFound("focus coordinate not found in grid");
+
+        const reqX = Math.round(x);
+        const reqY = Math.round(y);
+        const focus = picked.reduce<{ node: typeof picked[number]; dist: number } | null>((best, node) => {
+          const dist = Math.abs(node.x - reqX) + Math.abs(node.y - reqY);
+          if (!best) return { node, dist };
+          if (dist < best.dist) return { node, dist };
+          if (dist === best.dist && node.score > best.node.score) return { node, dist };
+          return best;
+        }, null);
+        const focusNode = focus?.node ?? picked[0];
+        const offsetX = reqX - focusNode.x;
+        const offsetY = reqY - focusNode.y;
         const ids = picked.map((d) => d.id);
         const edges = Grid.buildEdges(ids, Math.min(4, Math.max(1, Math.floor(Math.sqrt(c)))));
         const metaList = await opts.prisma.document.findMany({
@@ -149,8 +162,8 @@ export const wikiRoutes = (opts: WikiRoutesOptions) =>
             title: d.title,
             image: metaById[d.id]?.thumbnail ?? fallbackImg,
             words: metaById[d.id]?.words ?? 0,
-            x: d.x,
-            y: d.y,
+            x: d.x + offsetX,
+            y: d.y + offsetY,
             score: d.score,
             views: d.views ?? 0,
             updatedAt: d.updatedAt,

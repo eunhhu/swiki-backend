@@ -322,26 +322,70 @@ export class GridMapService {
     return ranked;
   }
 
-  // Return around documents based on an (x, y) grid coordinate rather than a document id.
-  // It finds the nearest occupied cell to the given coordinate and then reuses getAround.
+  /**
+   * Return documents around a requested grid coordinate (x, y).
+   *
+   * Algorithm
+   * 1. Find the nearest OCCUPIED cell (focus) to the requested coordinate using
+   *    Manhattan distance. This guarantees we start at an existing document.
+   * 2. Walk outward in Manhattan rings (r = 0, 1, 2, …) around the focus cell
+   *    collecting documents until we gather `c` items or exhaust the grid.
+   *
+   * Deterministic ordering rules when merging candidates:
+   *   a) Smaller Manhattan distance to FOCUS first
+   *   b) Higher `score` next
+   *   c) Lexicographically smaller `id` as final tie-breaker
+   */
   getAroundCoord(x: number, y: number, c: number): GridDocNode[] {
     if (this.docsById.size === 0) return [];
-    const normalized = Number.isFinite(c) ? Math.floor(c) : 1;
-    const limit = Math.max(1, Math.min(normalized, this.docsById.size));
-    const ranked = Array.from(this.docsById.values())
-      .map((node) => ({
-        node,
-        dist: Math.hypot(node.x - x, node.y - y),
-      }))
-      .sort((a, b) => {
-        if (a.dist !== b.dist) return a.dist - b.dist;
-        if (b.node.score !== a.node.score) return b.node.score - a.node.score;
-        return a.node.id.localeCompare(b.node.id);
-      })
-      .slice(0, limit)
-      .map((entry) => entry.node);
-    for (const n of ranked) this.lastAccess.set(n.id, now());
-    return ranked;
+
+    // Clamp requested count within valid range
+    const limit = Math.max(1, Math.min(Number.isFinite(c) ? Math.floor(c) : 1, this.docsById.size));
+
+    const reqX = Math.round(x);
+    const reqY = Math.round(y);
+
+    // 1. Locate the nearest existing node (focus) w.r.t Manhattan distance.
+    let focus: GridDocNode | null = null;
+    let minDist = Number.POSITIVE_INFINITY;
+    for (const node of this.docsById.values()) {
+      const d = Math.abs(node.x - reqX) + Math.abs(node.y - reqY);
+      if (d < minDist || (d === minDist && node.score > (focus?.score ?? -Infinity))) {
+        minDist = d;
+        focus = node;
+      }
+    }
+    if (!focus) return [];
+
+    const focusX = focus.x;
+    const focusY = focus.y;
+
+    const picked: GridDocNode[] = [];
+    const seen = new Set<string>();
+
+    // Walk outward in rings around the FOCUS cell
+    for (let r = 0; picked.length < limit; r++) {
+      for (const pos of this.ringNeighbors(focusX, focusY, r)) {
+        const id = this.idByCell.get(cellKey(pos.x, pos.y));
+        if (!id || seen.has(id)) continue;
+        const node = this.docsById.get(id);
+        if (!node) continue;
+        picked.push(node);
+        seen.add(id);
+        this.lastAccess.set(id, now());
+        if (picked.length >= limit) break;
+      }
+      if (r > this.docsById.size) break; // guard against infinite loop on sparse grid
+    }
+
+    // Deterministic ordering
+    return picked.sort((a, b) => {
+      const da = Math.abs(a.x - focusX) + Math.abs(a.y - focusY);
+      const db = Math.abs(b.x - focusX) + Math.abs(b.y - focusY);
+      if (da !== db) return da - db;
+      if (b.score !== a.score) return b.score - a.score;
+      return a.id.localeCompare(b.id);
+    }).slice(0, limit);
   }
 
   searchByEmbedding(qEmb: number[], n: number): GridDocNode[] {
