@@ -388,16 +388,31 @@ export class GridMapService {
     }).slice(0, limit);
   }
 
+  /**
+   * Return documents whose integer coordinates fall inside a box centered at (x, y)
+   * with `width` columns and `height` rows. The box is inclusive on all sides and
+   * width/height values are clamped to >= 1 before centering around the rounded
+   * focus coordinate.
+   */
   getInBox(x: number, y: number, width: number, height: number): GridDocNode[] {
     if (this.docsById.size === 0) return [];
     if (!Number.isFinite(width) || !Number.isFinite(height)) return [];
 
     const wInt = Math.max(1, Math.floor(Math.abs(width)));
     const hInt = Math.max(1, Math.floor(Math.abs(height)));
-    const minX = Math.round(x);
-    const minY = Math.round(y);
-    const maxX = minX + wInt - 1;
-    const maxY = minY + hInt - 1;
+
+    const centerX = Math.round(x);
+    const centerY = Math.round(y);
+
+    const left = Math.floor((wInt - 1) / 2);
+    const right = wInt - 1 - left;
+    const top = Math.floor((hInt - 1) / 2);
+    const bottom = hInt - 1 - top;
+
+    const minX = centerX - left;
+    const maxX = centerX + right;
+    const minY = centerY - top;
+    const maxY = centerY + bottom;
 
     const hits: GridDocNode[] = [];
     for (const node of this.docsById.values()) {

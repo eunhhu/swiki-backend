@@ -51,9 +51,15 @@ describe("GridMapService spatial queries", () => {
     }
   });
 
-  it("returns nodes inside the inclusive box sorted by row then column", () => {
+  it("treats x,y as the box center and respects span", () => {
     const grid = buildGrid();
-    const result = grid.getInBox(0, 0, 6, 6);
+    const result = grid.getInBox(0, 0, 5, 5);
+    expect(result.map((n) => n.id)).toEqual(["a"]);
+  });
+
+  it("returns nodes inside the centered box sorted by row then column", () => {
+    const grid = buildGrid();
+    const result = grid.getInBox(2, 2, 7, 7);
     expect(result.map((n) => n.id)).toEqual(["a", "d"]);
   });
 
