@@ -388,6 +388,33 @@ export class GridMapService {
     }).slice(0, limit);
   }
 
+  getInBox(x: number, y: number, width: number, height: number): GridDocNode[] {
+    if (this.docsById.size === 0) return [];
+    if (!Number.isFinite(width) || !Number.isFinite(height)) return [];
+
+    const wInt = Math.max(1, Math.floor(Math.abs(width)));
+    const hInt = Math.max(1, Math.floor(Math.abs(height)));
+    const minX = Math.round(x);
+    const minY = Math.round(y);
+    const maxX = minX + wInt - 1;
+    const maxY = minY + hInt - 1;
+
+    const hits: GridDocNode[] = [];
+    for (const node of this.docsById.values()) {
+      if (node.x >= minX && node.x <= maxX && node.y >= minY && node.y <= maxY) {
+        hits.push(node);
+        this.lastAccess.set(node.id, now());
+      }
+    }
+
+    return hits.sort((a, b) => {
+      if (a.y !== b.y) return a.y - b.y;
+      if (a.x !== b.x) return a.x - b.x;
+      if (b.score !== a.score) return b.score - a.score;
+      return a.id.localeCompare(b.id);
+    });
+  }
+
   searchByEmbedding(qEmb: number[], n: number): GridDocNode[] {
     // cosine similarity against loaded docs
     function cos(a: number[], b: number[]): number {
@@ -449,7 +476,10 @@ export class GridMapService {
     return this.withLock(async () => {
       const out: GridDocNode[] = [];
       const missing: string[] = [];
+      const seenIds = new Set<string>();
       for (const id of ids) {
+        if (seenIds.has(id)) continue;
+        seenIds.add(id);
         const ex = this.docsById.get(id);
         if (ex) {
           out.push(ex);

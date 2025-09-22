@@ -8,7 +8,7 @@ import { hashIpUa } from "../document/hash";
 import { ApiResponse } from "../api/schema";
 import { DocumentSummarySchema, CreateDocumentBodySchema, CreateDocumentResponseSchema, DocumentSchema, DocCreateBodySchema, DocPatchBodySchema } from "./schema";
 import { flushDoc, loadDocToCache, updateCachedContent } from "../document/cache";
-import { BrowseResponseSchema, BrowseQuerySchema } from "../browse/schema";
+import { BrowseResponseSchema, BrowseQuerySchema, BrowseBoxQuerySchema } from "../browse/schema";
 import { projectTo2D, buildKnnEdges } from "../browse/layout";
 import { Grid } from "../browse/grid";
 import { trendingScore as computeTrendingScore } from "../browse/score";
@@ -173,6 +173,86 @@ export const wikiRoutes = (opts: WikiRoutesOptions) =>
       },
       {
         query: t.Object({ x: t.String(), y: t.String(), c: t.Optional(t.String()) }),
+        response: ApiResponse(BrowseResponseSchema),
+      },
+    )
+
+    .get(
+      "/browse/box",
+      async ({ query }) => {
+        const { x: xRaw, y: yRaw, w: wRaw, h: hRaw } = query as {
+          x?: string;
+          y?: string;
+          w?: string;
+          h?: string;
+        };
+        if (
+          typeof xRaw === "undefined" ||
+          typeof yRaw === "undefined" ||
+          typeof wRaw === "undefined" ||
+          typeof hRaw === "undefined"
+        ) {
+          return Api.badRequest("x, y, w and h are required");
+        }
+
+        const x = Number(xRaw);
+        const y = Number(yRaw);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+          return Api.badRequest("x and y must be numbers");
+        }
+
+        const widthParsed = asPositiveInt(wRaw);
+        const heightParsed = asPositiveInt(hRaw);
+        if (widthParsed === null || heightParsed === null) {
+          return Api.badRequest("w and h must be positive integers");
+        }
+
+        const MAX_SPAN = Number(process.env.GRID_MAX_BOX_SPAN ?? 200);
+        const MAX_RESULTS = Number(process.env.GRID_MAX_BOX_RESULTS ?? 2000);
+
+        const width = Math.max(1, Math.min(widthParsed, MAX_SPAN));
+        const height = Math.max(1, Math.min(heightParsed, MAX_SPAN));
+
+        if (!Grid.isInitialized()) {
+          const initCount = Math.max(50, Math.min(width * height, MAX_RESULTS));
+          await Grid.ensureInitialized(opts.prisma, initCount);
+          Grid.startCleanup();
+        }
+
+        const picked = Grid.getInBox(x, y, width, height);
+        if (!picked.length) return Api.success({ nodes: [] });
+
+        const limited = picked.slice(0, Math.min(picked.length, MAX_RESULTS));
+        const ids = limited.map((d) => d.id);
+
+        const metaList = ids.length
+          ? await opts.prisma.document.findMany({
+              where: { id: { in: ids } },
+              select: { id: true, words: true, thumbnail: true },
+            })
+          : [];
+        const metaById = new Map(metaList.map((m) => [m.id, m] as const));
+
+        const nodes = limited.map((d) => {
+          const fallbackImg = `https://picsum.photos/seed/${encodeURIComponent(d.id)}/1080/1080`;
+          const meta = metaById.get(d.id);
+          return {
+            id: d.id,
+            title: d.title,
+            image: meta?.thumbnail ?? fallbackImg,
+            words: meta?.words ?? d.words ?? 0,
+            x: d.x,
+            y: d.y,
+            score: d.score,
+            views: d.views ?? 0,
+            updatedAt: d.updatedAt,
+          };
+        });
+
+        return Api.success({ nodes });
+      },
+      {
+        query: BrowseBoxQuerySchema,
         response: ApiResponse(BrowseResponseSchema),
       },
     )

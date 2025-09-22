@@ -29,6 +29,13 @@ export const BrowseQuerySchema = t.Object({
   count: t.Optional(t.Union([t.String(), t.Number()])),
 });
 
+export const BrowseBoxQuerySchema = t.Object({
+  x: t.String(),
+  y: t.String(),
+  w: t.String(),
+  h: t.String(),
+});
+
 export const SearchBrowseQuerySchema = t.Object({
   q: t.String(),
   n: t.Optional(t.String()),

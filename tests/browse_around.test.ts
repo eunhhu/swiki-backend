@@ -33,7 +33,7 @@ const buildGrid = () => {
   return grid;
 };
 
-describe("GridMapService.getAroundCoord", () => {
+describe("GridMapService spatial queries", () => {
   it("returns the nearest nodes ordered by distance and score", () => {
     const grid = buildGrid();
     const result = grid.getAroundCoord(0, 0, 4);
@@ -49,5 +49,18 @@ describe("GridMapService.getAroundCoord", () => {
       const value = lastAccess.get(node.id) ?? 0;
       expect(value).toBeGreaterThan(0);
     }
+  });
+
+  it("returns nodes inside the inclusive box sorted by row then column", () => {
+    const grid = buildGrid();
+    const result = grid.getInBox(0, 0, 6, 6);
+    expect(result.map((n) => n.id)).toEqual(["a", "d"]);
+  });
+
+  it("deduplicates ids when ensuring nodes by id", async () => {
+    const grid = buildGrid();
+    const prismaStub = { document: { findMany: async () => [] } } as any;
+    const result = await grid.ensureNodesPlacedByIds(prismaStub, ["a", "a", "b"]);
+    expect(result.map((n) => n.id)).toEqual(["a", "b"]);
   });
 });
