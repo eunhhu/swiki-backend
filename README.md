@@ -1,96 +1,125 @@
-# Elysia with Bun runtime
+# swiki-backend
 
-## Getting Started
-To get started with this template, simply paste this command into your terminal:
+Backend API for **swiki**, a small collaborative wiki whose documents are laid out on a 2D "trend map" grid and searched by title embeddings. The frontend (a separate repository) talks to this service over REST and WebSocket.
+
+**Status:** Prototype — a working Bun/Elysia server with auth, document CRUD, two collaboration channels and embedding search. Stored data is SQLite, Prisma migrations are not committed (`prisma db push` is used), there is one unit test file, and parts of the code (`/wiki/ws/doc/:id` presence/cursor payloads, uploads) are unpolished.
+
+## Features
+
+- Email/password auth with Argon2 hashing, access + refresh JWTs delivered as cookies or `Authorization: Bearer`, role check helper (`src/auth/guard.ts`)
+- Wiki documents (markdown + optional BlockNote JSON snapshot, tags, views, edit history) stored via Prisma
+- Real-time collaboration:
+  - `WS /wiki/ws/doc/:id` — Elysia WebSocket room per document; JSON messages `edit`, `join`, `cursor`; content is cached in memory and flushed to the DB (with a `History` entry) when the last editor leaves
+  - A separate Yjs-compatible WebSocket server (`src/yws/server.ts`, default `ws://localhost:8001/yws/:room`) speaking the y-websocket sync/awareness protocol for CRDT editors; rooms are in-memory only
+- Title embeddings via Google Gemini (`gemini-embedding-001`, 768 dims) with a deterministic local fallback when the API is unavailable; cosine-similarity search and search-driven graph browsing
+- Grid "trend map" (`src/browse/grid.ts`): places documents on an integer grid (nearest-free-cell or spiral), supports `trending`, `around (x, y)` and `box` queries, TTL cleanup, optional JSON persistence
+- Global and per-route rate limiting, security headers, request logging, daily JSON log files, Swagger UI outside production
+
+## How it works
+
+`src/index.ts` creates the Elysia app, mounts CORS/cookie/rate-limit/security/logging middleware, serves `public/`, and registers four route groups: `auth/` (`/auth/*`), `wiki/` (`/wiki/*`), `search/` (`/search*`) and `admin/` (`/admin/*`). It also starts the Yjs WebSocket server from `yws/server.ts` on its own port. Persistence is Prisma over SQLite (`prisma/schema.prisma`: `User`, `Role`, `Document`, `History`, `Tag`). `embedding.ts` wraps the Gemini client; `browse/` holds the grid service, layout/score helpers and schemas; `document/cache.ts` is the write-behind cache used by the document WebSocket.
+
+### Endpoints
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/`, `/health` | redirect to health / `"OK"` |
+| POST | `/auth/login`, `/auth/register`, `/auth/refresh`, `/auth/logout` | login 5/min, register 3/hour |
+| GET | `/auth/me` | current JWT payload |
+| GET | `/wiki/browse/trending?n&k` | top documents as `{ nodes, edges }` |
+| GET | `/wiki/browse/around?x&y&c` | BFS from the nearest occupied cell |
+| GET | `/wiki/browse/box?...` | documents inside a grid box (bounded by `GRID_MAX_BOX_*`) |
+| POST | `/wiki/documents`, `/wiki/docs` | create a document (`title`, `tags`) |
+| GET / PATCH | `/wiki/docs/:id` | read / update a document |
+| POST | `/wiki/uploads` | multipart file upload → `{ url }` |
+| WS | `/wiki/ws/doc/:id` | collaborative editing room (see above) |
+| GET | `/search?q&k` | embedding search → `{ id, title, score }[]` |
+| GET | `/search/browse?q&n&k` | graph around a query embedding |
+| GET | `/admin/grid/metrics` | requires header `x-admin-token` |
+
+Swagger is served at `/swagger` when `NODE_ENV` is not `production`.
+
+## Tech stack
+
+- Runtime/Language: Bun, TypeScript
+- Framework: Elysia (`@elysiajs/jwt`, `cookie`, `cors`, `static`, `swagger`), TypeBox schemas (`prismabox` generates them from the Prisma schema)
+- Storage: SQLite via Prisma 6
+- Collaboration: `yjs`, `y-protocols`, `lib0`, `ws`
+- Embeddings: `@google/genai`
+- Auth: `argon2`
+
+## Getting started
+
+### Requirements
+
+- Bun 1.x
+- A Gemini API key (optional — without it embeddings fall back to a deterministic pseudo-embedding, so search still runs but is not semantic)
+
+### Install
+
 ```bash
-bun create elysia ./elysia-example
+git clone https://github.com/eunhhu/swiki-backend.git
+cd swiki-backend
+bun install
+cp .env.example .env     # edit values, see Configuration
+bun run db:generate      # prisma generate (+ prismabox types)
+bun run db:push          # create the SQLite schema
+bun run db:seed          # optional: prisma/seed.ts
 ```
 
-## Development
-To start the development server run:
+### Run
+
 ```bash
-bun run dev
+bun run dev              # --watch src/index.ts, HTTP on :8000, Yjs WS on :8001
+bun test                 # tests/ (grid "around" queries)
+bun run db:studio        # Prisma Studio
 ```
 
-Open http://localhost:3000/ with your browser to see the result.
+Helper scripts: `scripts/e2e_grid_test.ts`, `scripts/validate_xy.ts` (grid checks), `scripts/test_auth.ps1` (PowerShell auth smoke test).
 
-## 라우터 및 API 설명
+## Project structure
 
-### 1. 인증(Auth) 라우터 (`/auth`)
+```
+src/
+├── index.ts           # app wiring, middleware, route registration
+├── auth/              # login/register/refresh/me/logout, JWT plugin, role guard, argon2 util
+├── wiki/              # documents, browse endpoints, uploads, /ws/doc/:id room
+├── search/            # /search and /search/browse
+├── admin/             # /admin/grid/metrics
+├── browse/            # GridMapService, layout, scoring, schemas
+├── document/          # in-memory doc cache + content hashing
+├── embedding.ts       # Gemini embeddings with fallback
+├── yws/server.ts      # Yjs-compatible WebSocket server
+├── middleware/        # rateLimit, securityHeaders, requestLogger
+├── api/, logger.ts, utils/env.ts, types/
+prisma/                # schema.prisma, seed.ts
+data/grid.json         # persisted grid layout (GRID_PERSIST_PATH)
+public/                # static assets
+tests/, scripts/
+```
 
-- **용도 / 역할**: 사용자 인증, 액세스·리프레시 토큰 발급 및 갱신, 세션 종료.
-- **엔드포인트 및 예상 시나리오**
-  1. **POST `/auth/login`**
-     - 시나리오: 사용자가 이메일과 비밀번호로 로그인합니다.
-     - 인풋 Body: `{ "email": "user@example.com", "password": "비밀번호" }`
-     - 출력: `user` 정보와 `accessToken`, `refreshToken`을 반환합니다.
-  2. **POST `/auth/register`**
-     - 시나리오: 신규 사용자가 회원가입합니다.
-     - 인풋 Body: `{ "email": "...", "password": "...", "name": "..." }`
-     - 출력: 생성된 `user` 정보.
-  3. **POST `/auth/refresh`**
-     - 시나리오: 액세스 토큰 만료 시 리프레시 토큰으로 새 토큰을 발급받습니다.
-     - 인풋: 쿠키 `refreshToken` 또는 헤더 `Authorization: Bearer <refreshToken>`
-     - 출력: 새로운 `accessToken`.
-  4. **GET `/auth/me`**
-     - 시나리오: 현재 로그인된 사용자의 정보를 조회합니다.
-     - 인풋: 쿠키 `accessToken` 또는 헤더 `Authorization: Bearer <accessToken>`
-     - 출력: JWT Payload (id, name, email, roles 등).
-  5. **POST `/auth/logout`**
-     - 시나리오: 로그아웃하여 인증 쿠키를 삭제합니다.
-     - 인풋: 없음 (쿠키 자동 제거).
-     - 출력: `null`.
+## Configuration
 
-> 로그인은 분당 5회, 회원가입은 시간당 3회로 레이트리밋이 적용됩니다.
+Environment variables read by the code (see `.env.example`):
 
-### 2. 위키(Wiki) 라우터 (`/wiki`)
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | `8000` | HTTP port |
+| `DATABASE_URL` | — | Prisma SQLite URL, e.g. `file:./db.sqlite` |
+| `YWS_PORT`, `YWS_PATH` | `8001`, `/yws` | Yjs WebSocket server |
+| `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` | dev fallbacks; required in production | JWT signing |
+| `JWT_ACCESS_EXPIRES_IN`, `JWT_REFRESH_EXPIRES_IN` | `1h`, `7d` | token lifetimes |
+| `GEMINI_API_KEY` | — | Gemini embeddings; fallback used if missing/failing |
+| `ALLOWED_ORIGINS` | localhost:3000/5173/`PORT` | comma-separated CORS origins |
+| `GRID_MAX_N`, `GRID_MAX_K`, `GRID_MAX_C` | — | caps for browse/search parameters |
+| `GRID_MAX_BOX_SPAN`, `GRID_MAX_BOX_RESULTS` | — | caps for `/wiki/browse/box` |
+| `GRID_PLACEMENT` | `nearest` | `nearest` or `spiral` placement |
+| `GRID_TTL_MS`, `GRID_CORE_RADIUS` | — | grid cleanup interval and protected core radius |
+| `GRID_PERSIST_PATH` | — | file to persist the grid; empty disables |
+| `ADMIN_TOKEN` | — | value for the `x-admin-token` header |
+| `LOG_DIR` | `logs` | directory for daily JSON logs |
+| `NODE_ENV` | — | `production` disables Swagger, hides error details, hardens cookies |
 
-- **용도 / 역할**: 위키 문서 생성, 열람, 공동 편집 및 그래프 형태의 브라우징을 제공합니다.
-- **엔드포인트**
-  1. **GET `/wiki/browse/trending`**
-     - 시나리오: 트렌딩 문서를 그래프(노드/간선) 형태로 조회합니다.
-     - 인풋 Query: `n`(노드 수, 기본 50), `k`(간선 수, 기본 4)
-     - 출력: `{ nodes: [...], edges: [...] }`
-  2. **GET `/wiki/browse/around`**
-     - 시나리오: 특정 좌표(`x`,`y`)를 중심으로 주변 문서를 조회합니다.
-     - 인풋 Query: `x`(정수 또는 숫자 문자열), `y`(정수 또는 숫자 문자열), `c`(반경 내 문서 수, 선택)
-     - 동작: 전달된 좌표와 가장 가까운 점유 셀을 기준으로 BFS로 주변 문서를 수집합니다.
-     - 출력: 노드·에지 리스트.
-  3. **POST `/wiki/documents`**
-     - 시나리오: 새 문서를 생성합니다.
-     - 인풋 Body: `{ "title": "...", "tags": ["태그1", "태그2"] }`
-     - 출력: `{ id: "새 문서 ID" }`
-  4. **WS `/wiki/ws/doc/:id`**
-     - 시나리오: 실시간 공동 편집을 위해 WebSocket을 연결합니다.
-     - 메시지 예시: `{ type: "edit" | "join" | "cursor", ... }`
+## License
 
-### 3. 검색(Search) 라우터 (루트 경로)
-
-- **용도 / 역할**: 문서 제목 임베딩 기반 검색 및 시각화 브라우징을 제공합니다.
-- **엔드포인트**
-  1. **GET `/search`**
-     - 시나리오: 키워드 기반으로 문서를 검색합니다.
-     - 인풋 Query: `q`(검색어, 필수), `k`(결과 수, 기본 10)
-     - 출력: `{ id, title, score }` 리스트.
-  2. **GET `/search/browse`**
-     - 시나리오: 검색어 임베딩을 기준으로 그래프 데이터를 요청합니다.
-     - 인풋 Query: `q`, `n`(노드 수), `k`(간선 수)
-     - 출력: `{ nodes: [...], edges: [...] }`
-
-### 4. 관리자(Admin) 라우터 (`/admin`)
-
-- **용도 / 역할**: 서버 운영 및 그리드 메트릭 확인.
-- **엔드포인트**
-  1. **GET `/admin/grid/metrics`**
-     - 시나리오: 현재 그리드(트렌드 맵)의 메트릭을 조회합니다.
-     - 인풋 Header: `x-admin-token` = `ADMIN_TOKEN` 환경변수 값.
-     - 출력: `{ total, placedOrder, removedCount, lastSaveTs, placement, persistPath }`
-
-### 5. 전역(Global) 엔드포인트
-
-- **GET `/`** → `/health` 로 리다이렉트됩니다.
-- **GET `/health`** → "OK" 문자열을 반환하여 헬스체크를 제공합니다.
-- 개발 모드에서는 **Swagger** 문서가 `/docs` 또는 `/swagger` 경로에 노출됩니다.
-
----
-이 문서는 프로젝트의 API 구조를 빠르게 파악하고자 하는 개발자를 위한 참고 자료입니다. 추가적인 질문이나 개선 사항이 있다면 언제든지 Issue 또는 PR을 남겨주세요.
+No license file yet.
